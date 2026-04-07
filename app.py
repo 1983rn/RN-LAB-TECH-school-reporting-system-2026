@@ -215,6 +215,11 @@ def before_request():
             return redirect(url_for('login'))
 
 # Initialize system components with error handling
+db = None
+user_manager = None
+generator = None
+analyzer = None
+
 try:
     db = SchoolDatabase()
     user_manager = SchoolUserManager(db.db_path)
@@ -1645,6 +1650,16 @@ def api_developer_add_school():
                 'success': False,
                 'message': f'Missing required fields: {", ".join(missing_fields)}'
             }), 400
+            
+        global db
+        if db is None:
+            try:
+                db = SchoolDatabase()
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'message': f'Database initialization failed: {str(e)}'
+                }), 500
         
         # Check if username already exists
         existing_schools = db.get_all_schools()
