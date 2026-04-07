@@ -99,14 +99,14 @@
                         <!-- Login Type Selection -->
                         <div class="mb-4">
                             <div class="btn-group w-100" role="group">
-                                <input type="radio" class="btn-check" name="userType" id="developer" value="developer" checked>
-                                <label class="btn btn-outline-primary" for="developer">
-                                    <i class="fas fa-code me-2"></i>Developer
-                                </label>
-                                
-                                <input type="radio" class="btn-check" name="userType" id="school" value="school">
+                                <input type="radio" class="btn-check" name="userType" id="school" value="school" checked>
                                 <label class="btn btn-outline-primary" for="school">
                                     <i class="fas fa-school me-2"></i>School Admin
+                                </label>
+
+                                <input type="radio" class="btn-check" name="userType" id="developer" value="developer">
+                                <label class="btn btn-outline-primary d-none" for="developer" id="developerLabel">
+                                    <i class="fas fa-code me-2"></i>Developer
                                 </label>
                             </div>
                         </div>
@@ -149,6 +149,23 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        let secretCode = '';
+        document.addEventListener('keydown', function(e) {
+            if (e.key.length === 1) {
+                secretCode += e.key.toLowerCase();
+                if (secretCode.length > 9) {
+                    secretCode = secretCode.substring(secretCode.length - 9);
+                }
+                if (secretCode === 'devaccess') {
+                    const devLabel = document.getElementById('developerLabel');
+                    if (devLabel.classList.contains('d-none')) {
+                        devLabel.classList.remove('d-none');
+                        document.getElementById('developer').checked = true;
+                    }
+                }
+            }
+        });
+
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
