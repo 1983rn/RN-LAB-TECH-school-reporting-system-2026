@@ -1,0 +1,54 @@
+services:
+  # Main web service
+  - type: web
+    name: school-reporting-system
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python deploy_render.py
+    startCommand: bash start_render.sh
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: DATABASE_PATH
+        value: "/opt/render/project/src/data/school_reports_persistent.db"
+      - key: BACKUP_DIR
+        value: "/opt/render/project/src/backups"
+      - key: AUTO_BACKUP_ENABLED
+        value: "true"
+      - key: DATA_PROTECTION_ENABLED
+        value: "true"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: FLASK_ENV
+        value: "production"
+    
+    # Persistent disk storage
+    disk:
+      name: school-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 10
+    
+    # Health check
+    healthCheckPath: /health
+    healthCheckTimeout: 100
+    
+    # Auto-deploy configuration
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - src/
+        - requirements.txt
+        - persistent_data_manager.py
+        - deploy_render.py
+        - start_render.sh
+
+# Version and region
+version: "1.0.0"
+region: oregon
+
+# Scaling (free tier)
+scaling:
+  minInstances: 1
+  maxInstances: 1
+  instanceType: free
+  autoPause: true

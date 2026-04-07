@@ -1,0 +1,705 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Malawi School Reporting System{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-cog me-2"></i>System Settings</h2>
+        <p class="text-muted">Configure school information and system parameters</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">School Information</h5>
+            </div>
+            <div class="card-body">
+                <form id="settingsForm">
+                    <div class="mb-3">
+                        <label for="schoolName" class="form-label">School Name</label>
+                        <input type="text"
+                               class="form-control"
+                               id="schoolName"
+                               value="{{ settings.school_name if settings and settings.school_name is not none and settings.school_name else '' }}">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="schoolAddress" class="form-label">School Address</label>
+                        <input type="text" class="form-control" id="schoolAddress" value="{{ settings.school_address if settings and settings.school_address is not none and settings.school_address else '' }}">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="schoolPhone" class="form-label">School Phone</label>
+                        <input type="text" class="form-control" id="schoolPhone" value="{{ settings.school_phone if settings and settings.school_phone is not none and settings.school_phone else '' }}">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="schoolEmail" class="form-label">School Email</label>
+                        <input type="email" class="form-control" id="schoolEmail" value="{{ settings.school_email if settings and settings.school_email is not none and settings.school_email else '' }}">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="nextTermBegins" class="form-label">Next Term Begins On</label>
+                        <input type="text" class="form-control" id="nextTermBegins" value="{{ settings.next_term_begins if settings and settings.next_term_begins is not none and settings.next_term_begins else '' }}" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="academicYearsSelect" class="form-label">Academic Year</label>
+                        <select id="academicYearsSelect" class="form-select">
+                            <option value="">Select year...</option>
+                            {% for y in available_years %}
+                            <option value="{{ y }}" {% if settings and settings.selected_academic_year == y %}selected{% elif y in academic_years and not settings.selected_academic_year %}selected{% endif %}>{{ y }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            <i class="fas fa-info-circle me-1"></i>
+                            Select the academic year to use across reports and data entry.
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="termsSelect" class="form-label">Term</label>
+                        <select id="termsSelect" class="form-select">
+                            <option value="">Select term...</option>
+                            {% for t in available_terms %}
+                            <option value="{{ t }}" {% if settings and settings.selected_term == t %}selected{% elif t in terms and not settings.selected_term %}selected{% endif %}>{{ t }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            <i class="fas fa-info-circle me-1"></i>
+                            Select the current term to use across reports and data entry.
+                        </div>
+                    </div>
+                    
+                    <!-- Show periods with existing grade data -->
+                    <div class="mb-3">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="card-title"><i class="fas fa-database me-2"></i>Periods with Grade Data</h6>
+                                <div id="periodsWithData">
+                                    <div class="text-muted">Loading...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="boardingFee" class="form-label">Boarding Fee</label>
+                                <input type="text" class="form-control" id="boardingFee" value="{{ settings.boarding_fee if settings and settings.boarding_fee is not none and settings.boarding_fee else '' }}">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="girlsUniform" class="form-label">Girls Uniform</label>
+                        <input type="text" class="form-control" id="girlsUniform" value="{{ settings.girls_uniform if settings and settings.girls_uniform is not none and settings.girls_uniform else '' }}" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="boysUniform" class="form-label">Boys Uniform</label>
+                        <input type="text" class="form-control" id="boysUniform" value="{{ settings.boys_uniform if settings and settings.boys_uniform is not none and settings.boys_uniform else '' }}" required>
+                    </div>
+                    
+                    <div class="d-grid">
+                        <button type="button" class="btn btn-info" onclick="updateSettings(this)">
+                            <i class="fas fa-save me-2"></i>Update Settings
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0">System Information</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled">
+                    <li><strong>Version:</strong> 2.0 (Web)</li>
+                    <li><strong>Platform:</strong> Flask Web App</li>
+                    <li><strong>Developer:</strong> RN_LAB_TECH</li>
+                    <li><strong>Compatibility:</strong> Ministry Standards</li>
+                    <li><strong>Database:</strong> SQLite</li>
+                    <li><strong>Export Format:</strong> Text Files</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Academic Standards</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled">
+                    <li><strong>Pass Mark:</strong> 50%</li>
+                    <li><strong>Minimum Subjects:</strong> 6</li>
+                    <li><strong>Mandatory Subject:</strong> English</li>
+                    <li><strong>Total Subjects:</strong> 12</li>
+                    <li><strong>Form Levels:</strong> 1-4</li>
+                    <li><strong>Terms per Year:</strong> 3</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">Subject Teachers by Form</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Assign teachers to subjects for each form level</p>
+                
+                <ul class="nav nav-tabs" id="teacherTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="form1-tab" data-bs-toggle="tab" data-bs-target="#form1-pane" type="button" role="tab">
+                            Form 1
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="form2-tab" data-bs-toggle="tab" data-bs-target="#form2-pane" type="button" role="tab">
+                            Form 2
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="form3-tab" data-bs-toggle="tab" data-bs-target="#form3-pane" type="button" role="tab">
+                            Form 3
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="form4-tab" data-bs-toggle="tab" data-bs-target="#form4-pane" type="button" role="tab">
+                            Form 4
+                        </button>
+                    </li>
+                </ul>
+                
+                <div class="tab-content mt-3" id="teacherTabsContent">
+                    <div class="tab-pane fade show active" id="form1-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Subject</th>
+                                        <th>Teacher Name</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="teachersTableBody1">
+                                    {% set subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 'Chichewa', 'Computer Studies', 'English', 'Geography', 'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics'] %}
+                                    {% for subject in subjects|sort %}
+                                    <tr>
+                                        <td><strong>{{ subject }}</strong></td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm" 
+                                                   id="teacher_1_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
+                                                   value="{{ (subject_teachers|default({})).get(1, {}).get(subject, subject ~ ' Teacher F1') }}" 
+                                                   placeholder="Enter teacher name" disabled>
+                                        </td>
+                                        <td>
+                                            <div class="btn-group" role="group">
+                                                <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(1, '{{ subject }}', this)"><i class="fas fa-edit"></i> Edit</button>
+                                                <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(1, '{{ subject }}', this)"><i class="fas fa-trash"></i> Delete</button>
+                                                <button class="btn btn-sm btn-primary d-none" id="saveBtn_1_{{ subject|replace(' ', '_')|replace('/', '_') }}" onclick="saveSubjectRow(1, '{{ subject }}', this)"><i class="fas fa-save"></i> Save</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-pane fade" id="form2-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Subject</th>
+                                        <th>Teacher Name</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="teachersTableBody2">
+                                    {% for subject in subjects %}
+                                    <tr>
+                                        <td><strong>{{ subject }}</strong></td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm" 
+                                                   id="teacher_2_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
+                                                   value="{{ (subject_teachers|default({})).get(2, {}).get(subject, subject ~ ' Teacher F2') }}" 
+                                                   placeholder="Enter teacher name" disabled>
+                                        </td>
+                                        <td>
+                                            <div class="btn-group" role="group">
+                                                <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(2, '{{ subject }}', this)"><i class="fas fa-edit"></i> Edit</button>
+                                                <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(2, '{{ subject }}', this)"><i class="fas fa-trash"></i> Delete</button>
+                                                <button class="btn btn-sm btn-primary d-none" id="saveBtn_2_{{ subject|replace(' ', '_')|replace('/', '_') }}" onclick="saveSubjectRow(2, '{{ subject }}', this)"><i class="fas fa-save"></i> Save</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-pane fade" id="form3-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Subject</th>
+                                        <th>Teacher Name</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="teachersTableBody3">
+                                    {% for subject in subjects %}
+                                    <tr>
+                                        <td><strong>{{ subject }}</strong></td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm" 
+                                                   id="teacher_3_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
+                                                   value="{{ (subject_teachers|default({})).get(3, {}).get(subject, subject ~ ' Teacher F3') }}" 
+                                                   placeholder="Enter teacher name" disabled>
+                                        </td>
+                                        <td>
+                                            <div class="btn-group" role="group">
+                                                <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(3, '{{ subject }}', this)"><i class="fas fa-edit"></i> Edit</button>
+                                                <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(3, '{{ subject }}', this)"><i class="fas fa-trash"></i> Delete</button>
+                                                <button class="btn btn-sm btn-primary d-none" id="saveBtn_3_{{ subject|replace(' ', '_')|replace('/', '_') }}" onclick="saveSubjectRow(3, '{{ subject }}', this)"><i class="fas fa-save"></i> Save</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-pane fade" id="form4-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Subject</th>
+                                        <th>Teacher Name</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="teachersTableBody4">
+                                    {% for subject in subjects %}
+                                    <tr>
+                                        <td><strong>{{ subject }}</strong></td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm" 
+                                                   id="teacher_4_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
+                                                   value="{{ (subject_teachers|default({})).get(4, {}).get(subject, subject ~ ' Teacher F4') }}" 
+                                                   placeholder="Enter teacher name" disabled>
+                                        </td>
+                                        <td>
+                                            <div class="btn-group" role="group">
+                                                <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(4, '{{ subject }}', this)"><i class="fas fa-edit"></i> Edit</button>
+                                                <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(4, '{{ subject }}', this)"><i class="fas fa-trash"></i> Delete</button>
+                                                <button class="btn btn-sm btn-primary d-none" id="saveBtn_4_{{ subject|replace(' ', '_')|replace('/', '_') }}" onclick="saveSubjectRow(4, '{{ subject }}', this)"><i class="fas fa-save"></i> Save</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-3 d-flex justify-content-end">
+                    <button class="btn btn-success" onclick="updateSettings(this)"><i class="fas fa-save me-2"></i>Update Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0">Standard Subjects & Departments</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h6 class="text-primary">🔬 Sciences Department</h6>
+                        <ul>
+                            <li>Agriculture</li>
+                            <li>Biology</li>
+                            <li>Chemistry</li>
+                            <li>Physics</li>
+                            <li>Mathematics</li>
+                            <li>Computer Studies</li>
+                            <li>Business Studies</li>
+                            <li>Home Economics</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-4">
+                        <h6 class="text-success">🏛️ Humanities Department</h6>
+                        <ul>
+                            <li>Bible Knowledge</li>
+                            <li>Geography</li>
+                            <li>History</li>
+                            <li>Life Skills/SOS</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-4">
+                        <h6 class="text-warning">🗣️ Languages Department</h6>
+                        <ul>
+                            <li>English (Mandatory)</li>
+                            <li>Chichewa</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <h6><i class="fas fa-info-circle me-2"></i>Settings Information</h6>
+            <ul class="mb-0">
+                <li>School information appears on all generated reports</li>
+                <li>Changes take effect immediately for new reports</li>
+                <li>All reports include official RN_LAB_TECH signature</li>
+                <li>Settings are stored locally and persist between sessions</li>
+            </ul>
+        </div>
+        
+        <div class="alert alert-success">
+            <h6><i class="fas fa-shield-alt me-2"></i>Grade Data Protection</h6>
+            <ul class="mb-0">
+                <li><strong>Safe Term/Year Changes:</strong> Adding or modifying terms and academic years will NOT affect existing student grades</li>
+                <li><strong>Data Preservation:</strong> All previously entered grades remain accessible even when you add new academic periods</li>
+                <li><strong>Flexible Configuration:</strong> You can add new terms/years for future use without losing historical data</li>
+                <li><strong>Smart Filtering:</strong> The system automatically shows which periods have actual grade data</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load subject teachers and periods data on page load
+document.addEventListener('DOMContentLoaded', function() {
+    for (let formLevel = 1; formLevel <= 4; formLevel++) {
+        loadSubjectTeachers(formLevel);
+    }
+    loadPeriodsWithData();
+});
+
+function loadSubjectTeachers(formLevel) {
+    fetch(`/api/get-subject-teachers?form_level=${formLevel}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const tbody = document.getElementById(`teachersTableBody${formLevel}`);
+            tbody.innerHTML = '';
+            
+            const subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
+                             'Chichewa', 'Computer Studies', 'English', 'Geography', 
+                             'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics'];
+            
+            subjects.forEach(subject => {
+                const teacherName = data.teachers[subject] || `${subject} Teacher F${formLevel}`;
+                const row = document.createElement('tr');
+                const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                row.innerHTML = `
+                    <td><strong>${subject}</strong></td>
+                    <td>
+                        <input type="text" class="form-control form-control-sm" 
+                               id="${inputId}" 
+                               value="${teacherName}" 
+                               placeholder="Enter teacher name" disabled>
+                    </td>
+                    <td>
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-edit"></i> Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-trash"></i> Delete</button>
+                            <button class="btn btn-sm btn-primary d-none" id="saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}" onclick="saveSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-save"></i> Save</button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+    })
+    .catch(error => {
+        console.error(`Error loading subject teachers for Form ${formLevel}:`, error);
+    });
+}
+
+function updateSubjectTeacher(subject, formLevel, buttonElement) {
+    const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const teacherName = document.getElementById(inputId).value.trim();
+    
+    if (!teacherName) {
+        alert('Please enter a teacher name');
+        return;
+    }
+    
+    fetch('/api/update-subject-teacher', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            subject: subject,
+            form_level: formLevel,
+            teacher_name: teacherName
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Disable input and toggle buttons
+            const input = document.getElementById(inputId);
+            input.disabled = true;
+
+            const saveBtnId = `saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            const saveBtn = document.getElementById(saveBtnId);
+            if (saveBtn) saveBtn.classList.add('d-none');
+
+            const editButtons = document.querySelectorAll(`button[onclick^="editSubjectRow(${formLevel}, '${subject}'`);
+            // Show edit button(s) again
+            editButtons.forEach(b => b.classList.remove('d-none'));
+
+            // Brief success flash
+            saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
+            setTimeout(() => { if (saveBtn) saveBtn.innerHTML = '<i class="fas fa-save"></i> Save'; }, 1000);
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error updating teacher: ' + error.message);
+    });
+}
+
+function editSubjectRow(formLevel, subject, buttonEl) {
+    const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const input = document.getElementById(inputId);
+    const saveBtnId = `saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const saveBtn = document.getElementById(saveBtnId);
+
+    input.disabled = false;
+    input.focus();
+    buttonEl.classList.add('d-none');
+    if (saveBtn) saveBtn.classList.remove('d-none');
+}
+
+function saveSubjectRow(formLevel, subject, buttonEl) {
+    // reuse update handler (buttonEl is the Save button)
+    updateSubjectTeacher(subject, formLevel, buttonEl);
+}
+
+function deleteSubjectRow(formLevel, subject, buttonEl) {
+    if (!confirm(`Delete assignment for ${subject} (Form ${formLevel})? This will remove the teacher assignment for this school.`)) {
+        return;
+    }
+
+    fetch('/api/delete-subject-teacher', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: subject, form_level: formLevel })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // remove row from table
+            const row = buttonEl.closest('tr');
+            if (row) row.parentNode.removeChild(row);
+        } else {
+            alert('Error deleting assignment: ' + data.message);
+        }
+    })
+    .catch(err => {
+        console.error('Error deleting subject teacher:', err);
+        alert('Error deleting assignment');
+    });
+}
+
+function loadPeriodsWithData() {
+    fetch('/api/get-available-periods')
+    .then(response => response.json())
+    .then(data => {
+        const container = document.getElementById('periodsWithData');
+        if (data.success && data.data) {
+            const periodsData = data.data;
+            
+            if (periodsData.periods_with_data && periodsData.periods_with_data.length === 0) {
+                container.innerHTML = '<div class="text-muted">No grade data found yet.</div>';
+                return;
+            }
+            
+            let html = '<div class="row">';
+            html += '<div class="col-md-6"><h6 class="text-success">Terms with Data:</h6><ul class="list-unstyled">';
+            
+            if (periodsData.terms_with_data && periodsData.terms_with_data.length > 0) {
+                periodsData.terms_with_data.forEach(term => {
+                    html += `<li><i class="fas fa-check-circle text-success me-1"></i>${term}</li>`;
+                });
+            } else {
+                html += '<li class="text-muted">None</li>';
+            }
+            
+            html += '</ul></div><div class="col-md-6"><h6 class="text-info">Years with Data:</h6><ul class="list-unstyled">';
+            
+            if (periodsData.years_with_data && periodsData.years_with_data.length > 0) {
+                periodsData.years_with_data.forEach(year => {
+                    html += `<li><i class="fas fa-check-circle text-info me-1"></i>${year}</li>`;
+                });
+            } else {
+                html += '<li class="text-muted">None</li>';
+            }
+            
+            html += '</ul></div></div>';
+            
+            if (periodsData.periods_with_data && periodsData.periods_with_data.length > 0) {
+                html += '<div class="mt-2"><small class="text-muted">Grade data exists for: ';
+                html += periodsData.periods_with_data.map(p => `${p.term} ${p.year}`).join(', ');
+                html += '</small></div>';
+            }
+            
+            container.innerHTML = html;
+        } else {
+            container.innerHTML = '<div class="text-muted">No periods data available</div>';
+        }
+    })
+    .catch(error => {
+        console.error('Error loading periods data:', error);
+        document.getElementById('periodsWithData').innerHTML = '<div class="text-danger">Error loading periods data</div>';
+    });
+}
+
+function updateSettings(clickedButton) {
+    const schoolName = document.getElementById('schoolName').value;
+    const schoolAddress = document.getElementById('schoolAddress').value;
+    const schoolPhone = document.getElementById('schoolPhone').value;
+    const schoolEmail = document.getElementById('schoolEmail').value;
+    const nextTermBegins = document.getElementById('nextTermBegins').value;
+    const boardingFee = document.getElementById('boardingFee').value;
+    const girlsUniform = document.getElementById('girlsUniform').value;
+    const boysUniform = document.getElementById('boysUniform').value;
+    
+    // For settings dropdowns we expect a single selected value; send arrays for compatibility with backend
+    const selectedYear = document.getElementById('academicYearsSelect').value;
+    const selectedTerm = document.getElementById('termsSelect').value;
+    const academicYears = selectedYear ? [selectedYear] : [];
+    const terms = selectedTerm ? [selectedTerm] : [];
+    if (!schoolName || !schoolAddress || !schoolPhone || !schoolEmail) {
+        alert('Please fill in all fields');
+        return;
+    }
+
+    // Use the clicked button if provided, otherwise find the first Update Settings button
+    const button = clickedButton || document.querySelector('button[onclick*="updateSettings"]');
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Updating...';
+    button.disabled = true;
+    
+    // Disable all Update Settings buttons to prevent multiple submissions
+    document.querySelectorAll('button[onclick*="updateSettings"]').forEach(btn => {
+        btn.disabled = true;
+    });
+
+    fetch('/api/update-settings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            school_name: schoolName,
+            school_address: schoolAddress,
+            school_phone: schoolPhone,
+            school_email: schoolEmail,
+            next_term_begins: nextTermBegins,
+            boarding_fee: boardingFee,
+            girls_uniform: girlsUniform,
+            boys_uniform: boysUniform,
+            academic_years: academicYears,
+            terms: terms,
+            selected_term: selectedTerm,
+            selected_academic_year: selectedYear
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        // Re-enable all Update Settings buttons
+        document.querySelectorAll('button[onclick*="updateSettings"]').forEach(btn => {
+            btn.disabled = false;
+            if (btn === button) {
+                btn.innerHTML = originalText;
+            }
+        });
+        
+        if (data.success) {
+            // Show success message - try to find settingsForm, otherwise use a parent container
+            let alertContainer = document.getElementById('settingsForm');
+            if (!alertContainer) {
+                // If settingsForm not found, use the first card-body or the clicked button's parent
+                alertContainer = clickedButton ? clickedButton.closest('.card-body') || clickedButton.closest('.card') : document.querySelector('.card-body');
+            }
+            
+            if (alertContainer) {
+                // Remove any existing success alerts
+                const existingAlerts = alertContainer.querySelectorAll('.alert-success');
+                existingAlerts.forEach(alert => alert.remove());
+                
+                const alertDiv = document.createElement('div');
+                alertDiv.className = 'alert alert-success alert-dismissible fade show mt-3';
+                alertDiv.innerHTML = `
+                    <i class="fas fa-check-circle me-2"></i>${data.message}
+                    <br><small class="text-muted">Note: If you have Data Entry or Ranking Analysis pages open, refresh them to see the updated settings.</small>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                `;
+                alertContainer.appendChild(alertDiv);
+                
+                // Auto-hide after 5 seconds (longer to read the note)
+                setTimeout(() => {
+                    if (alertDiv.parentNode) {
+                        alertDiv.remove();
+                    }
+                }, 5000);
+            } else {
+                // Fallback to alert if we can't find a container
+                alert('Settings updated successfully!');
+            }
+            
+            // Reload periods data to show any new periods
+            loadPeriodsWithData();
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        // Re-enable all Update Settings buttons
+        document.querySelectorAll('button[onclick*="updateSettings"]').forEach(btn => {
+            btn.disabled = false;
+            if (btn === button) {
+                btn.innerHTML = originalText;
+            }
+        });
+        alert('Error updating settings: ' + error.message);
+    });
+}
+</script>
+{% endblock %}

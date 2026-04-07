@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: rnsambe-malawi-school-reporting
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:application
+    healthCheckPath: /health
+    disk:
+      name: school-data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_DEBUG
+        value: false
+      - key: PYTHONPATH
+        value: .
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /opt/render/project/data/school_reports.db
+      - key: DEVELOPER_USERNAME
+        generateValue: true
+      - key: DEVELOPER_PASSWORD
+        generateValue: true
+    # Enable auto-deploy on push (change to false if you prefer manual deploys)
+    autoDeploy: true

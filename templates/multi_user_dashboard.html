@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-User Dashboard - {{ school_name }}</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    
+    <style>
+        .form-card {
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        .form-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            border-color: var(--bs-primary);
+        }
+        .form-card.assigned {
+            border-color: #28a745;
+            background: linear-gradient(135deg, #f8fff8 0%, #ffffff 100%);
+        }
+        .form-card.not-assigned {
+            opacity: 0.6;
+            background: #f8f9fa;
+        }
+        .user-info {
+            background: linear-gradient(135deg, var(--bs-primary) 0%, #0066cc 100%);
+            color: white;
+            padding: 1.5rem;
+            border-radius: 15px;
+            margin-bottom: 2rem;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        .status-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        .status-assigned {
+            background: #28a745;
+            color: white;
+        }
+        .status-busy {
+            background: #ffc107;
+            color: #212529;
+        }
+        .status-not-assigned {
+            background: #6c757d;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-graduation-cap me-2"></i>
+                {{ school_name }}
+            </a>
+            <div class="navbar-nav ms-auto">
+                <span class="navbar-text me-3">
+                    <i class="fas fa-user me-1"></i>
+                    {{ full_name }}
+                </span>
+                <a class="nav-link" href="{{ url_for('logout') }}">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- User Information -->
+        <div class="user-info">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h3 class="mb-1">
+                        <i class="fas fa-user-tie me-2"></i>
+                        Welcome, {{ full_name }}!
+                    </h3>
+                    <p class="mb-0">
+                        <i class="fas fa-school me-1"></i>
+                        {{ school_name }} | 
+                        <i class="fas fa-user-tag me-1"></i>
+                        {{ role.title() }}
+                    </p>
+                </div>
+                <div class="col-md-4 text-end">
+                    <div class="badge bg-success fs-6">
+                        <i class="fas fa-check-circle me-1"></i>
+                        Active Session
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Assigned Forms -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <h4 class="mb-3">
+                    <i class="fas fa-chalkboard-teacher me-2"></i>
+                    Your Assigned Forms
+                </h4>
+                <p class="text-muted">
+                    Click on your assigned form to enter student marks. Each form is managed independently 
+                    to prevent conflicts between users.
+                </p>
+            </div>
+        </div>
+
+        <div class="form-grid">
+            {% for form_num in [1, 2, 3, 4] %}
+            <div class="card form-card {% if form_num in assigned_forms %}assigned{% else %}not-assigned{% endif %}">
+                <div class="card-body">
+                    <div class="status-badge {% if form_num in assigned_forms %}status-assigned{% else %}status-not-assigned{% endif %}">
+                        {% if form_num in assigned_forms %}
+                            <i class="fas fa-check me-1"></i>Assigned
+                        {% else %}
+                            <i class="fas fa-times me-1"></i>Not Assigned
+                        {% endif %}
+                    </div>
+                    
+                    <h5 class="card-title">
+                        <i class="fas fa-users me-2"></i>
+                        Form {{ form_num }}
+                    </h5>
+                    
+                    {% if form_num in assigned_forms %}
+                        <p class="card-text">
+                            You have access to enter and manage marks for Form {{ form_num }} students.
+                        </p>
+                        <a href="{{ url_for('form_data_entry_multi_user', form_level=form_num) }}" 
+                           class="btn btn-primary w-100">
+                            <i class="fas fa-edit me-1"></i>
+                            Enter Marks
+                        </a>
+                    {% else %}
+                        <p class="card-text text-muted">
+                            You are not assigned to this form. Contact your administrator 
+                            if you need access.
+                        </p>
+                        <button class="btn btn-secondary w-100" disabled>
+                            <i class="fas fa-lock me-1"></i>
+                            Access Restricted
+                        </button>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- School Settings Information -->
+        <div class="row mt-5">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">
+                            <i class="fas fa-cogs me-2"></i>
+                            Current School Settings
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Academic Information</h6>
+                                <p class="mb-1">
+                                    <strong>Selected Term:</strong> 
+                                    {{ school_settings.selected_term or 'Not Set' }}
+                                </p>
+                                <p class="mb-1">
+                                    <strong>Academic Year:</strong> 
+                                    {{ school_settings.selected_academic_year or 'Not Set' }}
+                                </p>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>System Status</h6>
+                                <p class="mb-1">
+                                    <i class="fas fa-shield-alt text-success me-1"></i>
+                                    Multi-user mode active
+                                </p>
+                                <p class="mb-1">
+                                    <i class="fas fa-lock text-info me-1"></i>
+                                    Conflict prevention enabled
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Help Information -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="alert alert-info">
+                    <h6 class="alert-heading">
+                        <i class="fas fa-info-circle me-2"></i>
+                        Multi-User System Information
+                    </h6>
+                    <ul class="mb-0">
+                        <li>Each user can only access their assigned forms</li>
+                        <li>System prevents simultaneous editing of the same form</li>
+                        <li>All users share the same school settings</li>
+                        <li>Data is automatically saved and backed up</li>
+                        <li>Contact your administrator for form assignments</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Auto-refresh to check for form conflicts
+        let refreshInterval;
+        
+        function checkFormStatus() {
+            fetch('/api/check-form-status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.conflicts && data.conflicts.length > 0) {
+                        // Show conflict notification
+                        showConflictNotification(data.conflicts);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking form status:', error);
+                });
+        }
+        
+        function showConflictNotification(conflicts) {
+            const conflictDiv = document.createElement('div');
+            conflictDiv.className = 'alert alert-warning alert-dismissible fade show position-fixed';
+            conflictDiv.style.top = '20px';
+            conflictDiv.style.right = '20px';
+            conflictDiv.style.zIndex = '9999';
+            conflictDiv.style.maxWidth = '400px';
+            
+            conflictDiv.innerHTML = `
+                <h6 class="alert-heading">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Form Access Conflicts
+                </h6>
+                <p class="mb-1">The following forms are currently being edited:</p>
+                <ul class="mb-2">
+                    ${conflicts.map(conflict => 
+                        `<li>Form ${conflict.form_level} by ${conflict.user_name}</li>`
+                    ).join('')}
+                </ul>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            document.body.appendChild(conflictDiv);
+            
+            // Auto-remove after 10 seconds
+            setTimeout(() => {
+                if (conflictDiv.parentNode) {
+                    conflictDiv.parentNode.removeChild(conflictDiv);
+                }
+            }, 10000);
+        }
+        
+        // Start checking form status every 30 seconds
+        refreshInterval = setInterval(checkFormStatus, 30000);
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

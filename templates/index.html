@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - RN_LAB_TECH Progress Reporting System{% endblock %}
+
+{% block content %}
+<!-- Subscription Status Alert -->
+{% if session.get('user_type') == 'school' %}
+<div class="row" id="subscriptionAlert" style="display: none;">
+    <div class="col-12">
+        <div class="alert alert-dismissible fade show" role="alert" id="subscriptionAlertContent">
+            <!-- Alert content will be populated by JavaScript -->
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row">
+    <div class="col-12">
+        <div class="jumbotron bg-primary text-white compact-jumbotron rounded mb-3 text-center">
+            <h1 class="h4 mb-1">RN_LAB_TECH Progress Reporting System</h1>
+            <hr class="my-2">
+            <p class="mb-0 small">Professional School reports RN_LAB_TECH</p>
+        </div>
+    </div>
+</div>
+
+<div class="dashboard-content compact-dashboard">
+<div class="row">
+    <div class="col-md-3 mb-4">
+        <div class="card h-100 border-primary">
+            <div class="card-body text-center">
+                <i class="fas fa-edit fa-3x text-primary mb-3"></i>
+                <h5 class="card-title">FORM 1</h5>
+                <p class="card-text">Data Entry & Reports for Form 1 Students</p>
+                <a href="{{ url_for('form_data_entry', form_level=1) }}" class="btn btn-primary">Enter Data</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card h-100 border-success">
+            <div class="card-body text-center">
+                <i class="fas fa-edit fa-3x text-success mb-3"></i>
+                <h5 class="card-title">FORM 2</h5>
+                <p class="card-text">Data Entry & Reports for Form 2 Students</p>
+                <a href="{{ url_for('form_data_entry', form_level=2) }}" class="btn btn-success">Enter Data</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card h-100 border-warning">
+            <div class="card-body text-center">
+                <i class="fas fa-edit fa-3x text-warning mb-3"></i>
+                <h5 class="card-title">FORM 3</h5>
+                <p class="card-text">Data Entry & Reports for Form 3 Students</p>
+                <a href="{{ url_for('form_data_entry', form_level=3) }}" class="btn btn-warning">Enter Data</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card h-100 border-danger">
+            <div class="card-body text-center">
+                <i class="fas fa-edit fa-3x text-danger mb-3"></i>
+                <h5 class="card-title">FORM 4</h5>
+                <p class="card-text">Data Entry & Reports for Form 4 Students</p>
+                <a href="{{ url_for('form_data_entry', form_level=4) }}" class="btn btn-danger">Enter Data</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-trophy fa-3x text-secondary mb-3"></i>
+                <h5 class="card-title">Rankings & Analysis</h5>
+                <p class="card-text">Student rankings and top performers analysis</p>
+                <a href="{{ url_for('ranking_analysis') }}" class="btn btn-secondary">View Rankings</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <i class="fas fa-cog fa-3x text-dark mb-3"></i>
+                <h5 class="card-title">Settings</h5>
+                <p class="card-text">Configure school information and system parameters</p>
+                <a href="{{ url_for('settings') }}" class="btn btn-dark">Settings</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i>Academic Standards</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled">
+                    <li><strong>Pass Mark:</strong> 50%</li>
+                    <li><strong>Promotion Requirements:</strong> Must pass at least 6 subjects including English</li>
+                    <li><strong>English:</strong> MANDATORY for promotion (compulsory subject)</li>
+                    <li><strong>Total Subjects:</strong> 12 standard subjects</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0"><i class="fas fa-building me-2"></i>Department Classifications</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-12">
+                        <strong>🔬 Sciences:</strong> Agriculture, Biology, Chemistry, Physics, Mathematics, Computer Studies, Business Studies, Home Economics<br>
+                        <strong>🏛️ Humanities:</strong> Bible Knowledge, Geography, History, Life Skills/SOS<br>
+                        <strong>🗣️ Languages:</strong> English, Chichewa
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0"><i class="fas fa-star me-2"></i>System Features</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <ul class="list-unstyled">
+                            <li>✅ <strong>Professional Reports:</strong> Official government formatting</li>
+                            <li>✅ <strong>Web-Based:</strong> Access from any device with internet</li>
+                            <li>✅ <strong>Comprehensive:</strong> All report types in one system</li>
+                            <li>✅ <strong>Secure:</strong> Local processing and data storage</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <ul class="list-unstyled">
+
+                            <li>✅ <strong>Efficient:</strong> Fast report generation</li>
+                            <li>✅ <strong>Flexible:</strong> Customizable school information</li>
+                            <li>✅ <strong>Export Ready:</strong> Download reports as text files</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if session.get('user_type') == 'school' %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Check subscription status
+    const subscriptionStatus = '{{ session.get("subscription_status", "") }}';
+    const daysRemaining = {{ session.get('days_remaining', 0) }};
+    
+    if (subscriptionStatus && daysRemaining !== null) {
+        const alertDiv = document.getElementById('subscriptionAlert');
+        const alertContent = document.getElementById('subscriptionAlertContent');
+        
+        let alertClass = 'alert-info';
+        let alertIcon = 'fas fa-info-circle';
+        let alertMessage = '';
+        
+        if (daysRemaining <= 0) {
+            alertClass = 'alert-danger';
+            alertIcon = 'fas fa-exclamation-triangle';
+            alertMessage = `<i class="${alertIcon} me-2"></i><strong>Subscription Expired!</strong> Your subscription has expired. Please contact the administrator to renew your subscription to continue using the system.`;
+        } else if (daysRemaining <= 7) {
+            alertClass = 'alert-danger';
+            alertIcon = 'fas fa-exclamation-triangle';
+            alertMessage = `<i class="${alertIcon} me-2"></i><strong>Urgent:</strong> Your subscription expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}. Please renew immediately to avoid service interruption.`;
+        } else if (daysRemaining <= 30) {
+            alertClass = 'alert-warning';
+            alertIcon = 'fas fa-exclamation-circle';
+            alertMessage = `<i class="${alertIcon} me-2"></i><strong>Subscription Reminder:</strong> Your subscription expires in ${daysRemaining} days. Please renew to continue using the system.`;
+        } else if (subscriptionStatus === 'trial') {
+            alertClass = 'alert-info';
+            alertIcon = 'fas fa-info-circle';
+            alertMessage = `<i class="${alertIcon} me-2"></i><strong>Trial Period:</strong> You have ${daysRemaining} days remaining in your trial period. Contact the administrator to purchase a subscription.`;
+        }
+        
+        if (alertMessage) {
+            alertContent.className = `alert ${alertClass} alert-dismissible fade show`;
+            alertContent.innerHTML = alertMessage + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+            alertDiv.style.display = 'block';
+        }
+    }
+});
+</script>
+{% endif %}
+{% endblock %}

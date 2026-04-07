@@ -1,0 +1,19 @@
+[build]
+  command = "echo 'No build step required for Flask app'"
+  publish = "."
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[context.production.environment]
+  FLASK_ENV = "production"
+  FLASK_DEBUG = "false"
+
+[context.deploy-preview.environment]
+  FLASK_ENV = "development"
+  FLASK_DEBUG = "true"

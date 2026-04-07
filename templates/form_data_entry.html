@@ -1,0 +1,1548 @@
+{% extends "base.html" %}
+
+{% block title %}Form {{ form_level }} Data Entry - RN_LAB_TECH Progress Reporting System{% endblock %}
+
+{% block content %}
+<style>
+.search-edit-section {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border-radius: 10px;
+    padding: 20px;
+    border: 1px solid #dee2e6;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.search-edit-section .input-group-text {
+    border: none;
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+}
+
+.search-edit-section .form-control {
+    border: 2px solid #e9ecef;
+    border-left: none;
+    transition: all 0.3s ease;
+}
+
+.search-edit-section .form-control:focus {
+    border-color: #28a745;
+    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+.btn-outline-malawi-primary {
+    color: #007bff;
+    border-color: #007bff;
+}
+
+.btn-outline-malawi-primary:hover {
+    color: #fff;
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.btn-outline-malawi-green {
+    color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-outline-malawi-green:hover {
+    color: #fff;
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-malawi-warning {
+    background-color: #ffc107;
+    border-color: #ffc107;
+    color: #212529;
+}
+
+.btn-malawi-warning:hover {
+    background-color: #e0a800;
+    border-color: #d39e00;
+    color: #212529;
+}
+
+.subject-header-frozen {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    text-align: center;
+    vertical-align: middle;
+    box-shadow: none;
+    font-size: 0.75rem;
+    padding: 0.18rem;
+    transition: none;
+}
+
+.subject-header-frozen:hover {
+    background: linear-gradient(135deg, #6c757d 0%, #495057 100%) !important;
+    cursor: default;
+} 
+
+#noResultsRow {
+    background-color: #f8f9fa;
+    font-style: italic;
+}
+
+#noResultsRow td {
+    border: none;
+}
+
+/* Compact layout adjustments (tighter) */
+.data-entry-header-compact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 1rem;
+    background: linear-gradient(135deg, var(--malawi-green) 0%, var(--malawi-light-green) 100%);
+    color: white;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.data-entry-header-compact h2 {
+    font-size: 1.1rem;
+    margin: 0;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.data-entry-controls-compact {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.data-entry-controls-compact .form-select, 
+.data-entry-controls-compact .form-control {
+    height: 32px;
+    padding: 0 0.5rem;
+    font-size: 0.85rem;
+    min-width: 120px;
+}
+.data-entry-actions-compact {
+    position: relative;
+    z-index: 100;
+    background: white;
+    padding: 0.5rem;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+    margin-bottom: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.data-entry-actions-compact .btn-group .btn, 
+.data-entry-actions-compact .btn {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.82rem;
+    height: 32px;
+}
+.marks-table-container {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+}
+#marksTable {
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+}
+#marksTable thead th {
+    position: sticky;
+    top: -1px !important;
+    z-index: 50;
+    background: #1a1f2e !important;
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 0.25rem !important;
+    border-top: none !important;
+}
+.mark-input {
+    height: 28px !important;
+    padding: 0.2rem !important;
+    font-size: 0.85rem !important;
+}
+#studentSearchInput {
+    max-width: 200px;
+}
+#marksTable td {
+    padding-top: 0.15rem !important;
+    padding-bottom: 0.15rem !important;
+}
+
+
+</style>
+
+
+<div class="data-entry-header-compact">
+    <div class="d-flex align-items-center gap-3">
+        <h2><i class="fas fa-edit me-2"></i>Form {{ form_level }} Entry</h2>
+        <span class="badge bg-white text-success border" style="font-size: 0.75rem;">
+            Total: <span id="studentCount">{{ students|length }}</span>
+        </span>
+    </div>
+    <div class="data-entry-controls-compact">
+        <select id="termSelect" class="form-select" title="Select Term">
+            {% for t in terms %}
+            <option value="{{ t }}" {% if t == selected_term %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+        </select>
+        <select id="yearSelect" class="form-select" title="Select Academic Year">
+            {% for y in academic_years %}
+            <option value="{{ y }}" {% if y == selected_academic_year %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+        </select>
+        <div class="input-group input-group-sm" style="width: 250px;">
+            <span class="input-group-text bg-white text-success"><i class="fas fa-search"></i></span>
+            <input type="text" class="form-control" id="studentSearchInput" 
+                   placeholder="Search students..." onkeyup="filterStudents()">
+        </div>
+    </div>
+</div>
+
+<div class="data-entry-actions-compact">
+    <div class="d-flex gap-2">
+        <button class="btn btn-malawi-primary" onclick="loadAllMarks()">
+            <i class="fas fa-download me-1"></i>Load
+        </button>
+        <button class="btn btn-success" onclick="saveAllMarks()">
+            <i class="fas fa-save me-1"></i>Save All
+        </button>
+        <button class="btn btn-info" data-bs-toggle="modal" data-bs-target="#addStudentModal">
+            <i class="fas fa-user-plus me-1"></i>Add Student
+        </button>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-outline-dark" onclick="showAllStudents()">
+            <i class="fas fa-list me-1"></i>Show All
+        </button>
+        <button class="btn btn-outline-malawi-green" id="printAllReportsBtn">
+            <i class="fas fa-print me-1"></i>Print All (PDF)
+        </button>
+        <button class="btn btn-outline-secondary" onclick="exportStudentList()">
+            <i class="fas fa-file-export me-1"></i>Export
+        </button>
+    </div>
+</div>
+
+<!-- Students Table -->
+<div class="marks-table-container mt-1">
+    <table class="table table-bordered table-hover table-striped table-sm sticky-header" id="marksTable" style="margin-top: 0 !important;">
+        <!-- Main Table Headers (scrollable) -->
+        <thead class="table-dark">
+            <tr style="position: sticky; top: 0; z-index: 50;">
+                <th style="width: 5%; font-size: 0.78rem; padding: 0.18rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">#</th>
+                <th style="width: 20%; font-size: 0.78rem; padding: 0.18rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">Student Name</th>
+                {% for subject in subjects|sort %}
+                <th class="subject-column" style="font-size: 0.68rem; padding: 0.12rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">{{ subject }}</th>
+                {% endfor %}
+                <th style="width: 20%; font-size: 0.78rem; padding: 0.18rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">Actions</th>
+            </tr>
+        </thead>
+            
+
+            <tbody>
+                {% if students %}
+                    {% for student in students %}
+                <tr data-student-id="{{ student.student_id }}" class="{% if loop.index0 % 2 == 0 %}table-light{% else %}table-white{% endif %}">
+                    <td class="text-center" style="width: 50px;">
+                        <div class="bg-malawi-green text-white rounded-circle d-flex align-items-center justify-content-center" style="width: 25px; height: 25px; font-size: 0.75rem; font-weight: bold;">
+                            {{ loop.index }}
+                        </div>
+                    </td>
+                    <td class="student-name-column">
+                        <div class="compact-name">
+                            <strong class="text-malawi-black">{{ student.first_name }} {{ student.last_name }}</strong><br>
+                            <small class="text-muted compact-id">ID: {{ student.student_id }}</small>
+                        </div>
+                    </td>
+                    {% for subject in subjects|sort %}
+                    <td class="text-center subject-column">
+                        <input type="number" 
+                               class="form-control form-control-sm mark-input" 
+                               id="mark_{{ student.student_id }}_{{ subject|replace(' ', '_')|replace('/', '_') }}"
+                               min="0" max="100" 
+                               placeholder="0-100"
+                               data-student-id="{{ student.student_id }}"
+                               data-subject="{{ subject }}">
+                    </td>
+                    {% endfor %}
+                    <td class="text-center" style="width: 20%;">
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button class="btn btn-outline-warning btn-sm" 
+                                    onclick="editStudent('{{ student.student_id }}')"
+                                    title="Edit {{ student.first_name }} {{ student.last_name }}">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn btn-outline-danger btn-sm" 
+                                    onclick="deleteStudent('{{ student.student_id }}', '{{ student.first_name }} {{ student.last_name }}')"
+                                    title="Delete {{ student.first_name }} {{ student.last_name }}">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                            <button class="btn btn-outline-info btn-sm" 
+                                    onclick="printReportCard('{{ student.student_id }}', '{{ student.first_name }} {{ student.last_name }}')"
+                                    title="Print report card for {{ student.first_name }} {{ student.last_name }}">
+                                <i class="fas fa-print"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% else %}
+                <tr>
+                    <td colspan="{{ subjects|length + 2 }}" class="text-center py-5">
+                        <div class="text-muted">
+                            <i class="fas fa-graduation-cap fa-3x mb-3 text-malawi-green"></i>
+                            <h5 class="text-malawi-green">New Academic Year - No Students Enrolled Yet</h5>
+                            <p class="mb-3">
+                                This appears to be a new academic year/term. Students need to be enrolled for Form {{ form_level }} 
+                                before marks can be entered.
+                            </p>
+                            <div class="d-flex justify-content-center gap-2">
+                                <button class="btn btn-malawi-primary" data-bs-toggle="modal" data-bs-target="#addStudentModal">
+                                    <i class="fas fa-user-plus me-1"></i>Enroll First Student
+                                </button>
+                                <button class="btn btn-outline-secondary" onclick="location.reload()">
+                                    <i class="fas fa-sync me-1"></i>Refresh Page
+                                </button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+            <tfoot>
+                <tr class="table-light">
+                    <td colspan="{{ subjects|length + 2 }}" class="text-end">
+                        <strong class="text-malawi-green">
+                            <i class="fas fa-users me-1"></i>Total Learners Who Sat for Examinations: {{ students|length }}
+                        </strong>
+                    </td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+
+<!-- Quick Actions Section -->
+<div class="quick-actions">
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card stats-card">
+                <div class="card-header bg-malawi-green text-white">
+                    <h6 class="mb-0"><i class="fas fa-file-alt me-2"></i>Generate Report</h6>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold text-malawi-green">Select Student</label>
+                        <select class="form-select" id="reportStudentSelect">
+                            <option value="">Choose student...</option>
+                            {% for student in students %}
+                            <option value="{{ student.student_id }}">{{ student.first_name }} {{ student.last_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-malawi-primary" onclick="generateQuickReport()">
+                            <i class="fas fa-file-alt me-1"></i>Generate Report
+                        </button>
+                        <button class="btn btn-warning" onclick="testExport()">
+                            <i class="fas fa-bug me-1"></i>Test Export
+                        </button>
+                        <button class="btn btn-success" onclick="exportQuickReport()">
+                            <i class="fas fa-download me-1"></i>Export PDF
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-8">
+            <div class="card stats-card">
+                <div class="card-header bg-malawi-red text-white">
+                    <h6 class="mb-0"><i class="fas fa-eye me-2"></i>Report Preview</h6>
+                </div>
+                <div class="card-body">
+                    <pre id="reportPreview" style="max-height: 400px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 1rem; border-radius: 0.375rem;">Select a student to generate report...</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Print Report Section -->
+<div class="quick-actions">
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card stats-card">
+                <div class="card-header bg-malawi-black text-white">
+                    <h6 class="mb-0"><i class="fas fa-print me-2"></i>Print Report Card</h6>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold text-malawi-green">Select Student</label>
+                        <select class="form-select" id="printStudentSelect">
+                            <option value="">Choose student...</option>
+                            {% for student in students %}
+                            <option value="{{ student.student_id }}">{{ student.first_name }} {{ student.last_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-malawi-primary" onclick="printReport()">
+                            <i class="fas fa-print me-1"></i>Print Report
+                        </button>
+                        <button class="btn btn-info" onclick="previewPrint()">
+                            <i class="fas fa-eye me-1"></i>Preview
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-8">
+            <div class="card stats-card">
+                <div class="card-header bg-info text-white">
+                    <h6 class="mb-0"><i class="fas fa-eye me-2"></i>Print Preview</h6>
+                </div>
+                <div class="card-body">
+                    <div id="printPreview" style="max-height: 400px; overflow-y: auto; font-size: 12px; border: 1px solid #ddd; padding: 15px; background: white; border-radius: 0.375rem;">
+                        Select a student to preview print format...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Grading Information -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="grading-info alert">
+            <h6 class="text-primary"><i class="fas fa-info-circle me-2"></i>Grading System - Form {{ form_level }}</h6>
+            {% if form_level in [1, 2] %}
+            <p class="mb-0"><strong>Junior Forms (1 & 2):</strong> 
+                <span class="badge bg-success me-1">A (80-100)</span>
+                <span class="badge bg-warning me-1">B (70-79)</span>
+                <span class="badge bg-info me-1">C (60-69)</span>
+                <span class="badge bg-secondary me-1">D (50-59)</span>
+                <span class="badge bg-danger">F (0-49)</span>
+            </p>
+            {% else %}
+            <p class="mb-0"><strong>Senior Forms (3 & 4):</strong> 
+                <span class="badge bg-success me-1">1 (75-100)</span>
+                <span class="badge bg-success me-1">2 (70-74)</span>
+                <span class="badge bg-warning me-1">3 (65-69)</span>
+                <span class="badge bg-warning me-1">4 (60-64)</span>
+                <span class="badge bg-info me-1">5 (55-59)</span>
+                <span class="badge bg-info me-1">6 (50-54)</span>
+                <span class="badge bg-secondary me-1">7 (45-49)</span>
+                <span class="badge bg-secondary me-1">8 (40-44)</span>
+                <span class="badge bg-danger">9 (0-39)</span>
+            </p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block modals %}
+<!-- Add Student Modal -->
+<div class="modal fade" id="addStudentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-malawi-green text-white">
+                <h5 class="modal-title"><i class="fas fa-user-plus me-2"></i>Add New Student - Form {{ form_level }}</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addStudentForm">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold text-malawi-green">Student Serial Number</label>
+                        <div class="alert alert-light border-malawi-green">
+                            <i class="fas fa-info-circle text-malawi-green me-1"></i>
+                            <em>Will be auto-generated upon submission</em>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="firstName" class="form-label fw-bold text-malawi-green">
+                                <i class="fas fa-user me-1"></i>First Name
+                            </label>
+                            <input type="text" class="form-control" id="firstName" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="lastName" class="form-label fw-bold text-malawi-green">
+                                <i class="fas fa-user me-1"></i>Last Name
+                            </label>
+                            <input type="text" class="form-control" id="lastName" required>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-times me-1"></i>Cancel
+                </button>
+                <button type="button" class="btn btn-malawi-primary" onclick="submitNewStudent()">
+                    <i class="fas fa-plus me-1"></i>Add Student
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Student Modal -->
+<div class="modal fade" id="editStudentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-malawi-warning text-white">
+                <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Edit Student - Form {{ form_level }}</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="editStudentForm">
+                    <input type="hidden" id="editStudentId">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="editFirstName" class="form-label fw-bold text-malawi-green">
+                                <i class="fas fa-user me-1"></i>First Name
+                            </label>
+                            <input type="text" class="form-control" id="editFirstName" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editLastName" class="form-label fw-bold text-malawi-green">
+                                <i class="fas fa-user me-1"></i>Last Name
+                            </label>
+                            <input type="text" class="form-control" id="editLastName" required>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-times me-1"></i>Cancel
+                </button>
+                <button type="button" class="btn btn-malawi-warning" onclick="submitEditStudent()">
+                    <i class="fas fa-save me-1"></i>Update Student
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const formLevel = parseInt('{{ form_level }}');
+
+document.addEventListener('DOMContentLoaded', function() {
+    const printBtn = document.getElementById('printAllReportsBtn');
+    if (printBtn) {
+        printBtn.addEventListener('click', function() {
+            const term = document.getElementById('termSelect').value;
+            const year = document.getElementById('yearSelect').value;
+            const url = `/api/print-all-reports?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(year)}`;
+            window.open(url, '_blank');
+        });
+    }
+});
+
+// Search and filter functionality
+function filterStudents() {
+    const searchTerm = document.getElementById('studentSearchInput').value.toLowerCase();
+    const rows = document.querySelectorAll('#marksTable tbody tr');
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+        const studentName = row.querySelector('.student-name-column strong').textContent.toLowerCase();
+        if (studentName.includes(searchTerm)) {
+            row.style.display = '';
+            visibleCount++;
+        } else {
+            row.style.display = 'none';
+        }
+    });
+    
+    // Update student count
+    document.getElementById('studentCount').textContent = visibleCount;
+    
+    // Show/hide no results message
+    const noResultsRow = document.getElementById('noResultsRow');
+    if (visibleCount === 0 && searchTerm) {
+        if (!noResultsRow) {
+            const tbody = document.querySelector('#marksTable tbody');
+            const noResultsTr = document.createElement('tr');
+            noResultsTr.id = 'noResultsRow';
+            noResultsTr.innerHTML = `
+                <td colspan="${document.querySelectorAll('#marksTable thead th').length}" class="text-center text-muted py-4">
+                    <i class="fas fa-search me-2"></i>No students found matching "${searchTerm}"
+                </td>
+            `;
+            tbody.appendChild(noResultsTr);
+        }
+    } else if (noResultsRow) {
+        noResultsRow.remove();
+    }
+}
+
+function showAllStudents() {
+    document.getElementById('studentSearchInput').value = '';
+    filterStudents();
+}
+
+function exportStudentList() {
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    // formLevel is defined at the top of the script block
+    
+    // Create CSV content
+    let csvContent = 'data:text/csv;charset=utf-8,';
+    csvContent += 'Student ID,First Name,Last Name,Form Level,Term,Academic Year\n';
+    
+    const rows = document.querySelectorAll('#marksTable tbody tr:not([style*="display: none"])');
+    rows.forEach(row => {
+        const studentId = row.getAttribute('data-student-id');
+        const nameElement = row.querySelector('.student-name-column strong');
+        const fullName = nameElement.textContent;
+        const names = fullName.split(' ');
+        const firstName = names[0] || '';
+        const lastName = names.slice(1).join(' ') || '';
+        
+        csvContent += `${studentId},${firstName},${lastName},${formLevel},${term},${academicYear}\n`;
+    });
+    
+    // Download CSV file
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Form_${formLevel}_Students_${term}_${academicYear}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// Edit student functionality
+function editStudent(studentId, firstName, lastName) {
+    document.getElementById('editStudentId').value = studentId;
+    document.getElementById('editFirstName').value = firstName;
+    document.getElementById('editLastName').value = lastName;
+    
+    // Show the modal
+    const editModal = new bootstrap.Modal(document.getElementById('editStudentModal'));
+    editModal.show();
+}
+
+function submitEditStudent() {
+    const studentId = document.getElementById('editStudentId').value;
+    const firstName = document.getElementById('editFirstName').value.trim();
+    const lastName = document.getElementById('editLastName').value.trim();
+    
+    if (!firstName || !lastName) {
+        alert('Please fill in both first name and last name');
+        return;
+    }
+    
+    fetch('/api/update-student', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            first_name: firstName,
+            last_name: lastName
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Update the display
+            const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+            const nameElement = row.querySelector('.student-name-column strong');
+            nameElement.textContent = `${firstName} ${lastName}`;
+            
+            // Close modal
+            const editModal = bootstrap.Modal.getInstance(document.getElementById('editStudentModal'));
+            editModal.hide();
+            
+            showNotification('Student updated successfully!', 'success');
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error updating student: ' + error.message);
+    });
+}
+
+function submitNewStudent() {
+    const formData = {
+        first_name: document.getElementById('firstName').value,
+        last_name: document.getElementById('lastName').value,
+        form_level: formLevel
+    };
+    
+    if (!formData.first_name || !formData.last_name) {
+        alert('Please fill in all required fields');
+        return;
+    }
+    
+    fetch('/api/add-student', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            location.reload(); // Refresh to show new student
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error adding student: ' + error.message);
+    });
+}
+
+function editStudent(studentId) {
+    // Find the student row
+    const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+    if (!row) return;
+    
+    // Get current student name
+    const nameCell = row.querySelector('.student-name-column');
+    const nameElement = nameCell.querySelector('strong');
+    const currentName = nameElement.textContent;
+    
+    // Create edit modal if it doesn't exist
+    let editModal = document.getElementById('editStudentModal');
+    if (!editModal) {
+        const modalHtml = `
+            <div class="modal fade" id="editStudentModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Edit Student Name</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="editStudentForm">
+                                <div class="mb-3">
+                                    <label for="editFirstName" class="form-label">First Name</label>
+                                    <input type="text" class="form-control" id="editFirstName" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="editLastName" class="form-label">Last Name</label>
+                                    <input type="text" class="form-control" id="editLastName" required>
+                                </div>
+                                <input type="hidden" id="editStudentId">
+                            </form>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveStudentName()">Save Changes</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        editModal = document.getElementById('editStudentModal');
+    }
+    
+    // Parse current name into first and last name
+    const nameParts = currentName.trim().split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    
+    // Populate form fields
+    document.getElementById('editFirstName').value = firstName;
+    document.getElementById('editLastName').value = lastName;
+    document.getElementById('editStudentId').value = studentId;
+    
+    // Show modal
+    const modal = new bootstrap.Modal(editModal);
+    modal.show();
+}
+
+function saveStudentName() {
+    const studentId = document.getElementById('editStudentId').value;
+    const firstName = document.getElementById('editFirstName').value.trim();
+    const lastName = document.getElementById('editLastName').value.trim();
+    
+    if (!firstName || !lastName) {
+        showNotification('Both first name and last name are required', 'danger');
+        return;
+    }
+    
+    fetch('/api/update-student-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            first_name: firstName,
+            last_name: lastName,
+            form_level: formLevel
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Update the student name in the table
+            const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+            if (row) {
+                const nameElement = row.querySelector('.student-name-column strong');
+                nameElement.textContent = `${firstName} ${lastName}`;
+                
+                // Update button title attributes
+                const editBtn = row.querySelector('button[onclick*="editStudent"]');
+                const deleteBtn = row.querySelector('button[onclick*="deleteStudent"]');
+                
+                if (editBtn) {
+                    editBtn.setAttribute('title', `Edit ${firstName} ${lastName}`);
+                }
+                if (deleteBtn) {
+                    deleteBtn.setAttribute('onclick', `deleteStudent('${studentId}', '${firstName} ${lastName}')`);
+                    deleteBtn.setAttribute('title', `Delete ${firstName} ${lastName}`);
+                }
+            }
+            
+            // Hide modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('editStudentModal'));
+            modal.hide();
+            
+            showNotification(`Student name updated to ${firstName} ${lastName}`, 'success');
+        } else {
+            showNotification(`Failed to update student name: ${data.message}`, 'danger');
+        }
+    })
+    .catch(error => {
+        showNotification(`Error updating student name: ${error}`, 'danger');
+    });
+}
+
+function deleteStudent(studentId, studentName) {
+    if (confirm(`Are you sure you want to delete ${studentName} and all their marks?\n\nThis action cannot be undone.`)) {
+        fetch('/api/delete-student', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                student_id: studentId,
+                form_level: formLevel
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Remove the student row from the table
+                const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+                if (row) {
+                    row.remove();
+                }
+                
+                // Update the total learners count
+                const totalLearnersElement = document.querySelector('tfoot strong');
+                if (totalLearnersElement) {
+                    const currentCount = parseInt(totalLearnersElement.textContent.match(/\d+/)[0]);
+                    totalLearnersElement.textContent = totalLearnersElement.textContent.replace(/\d+/, currentCount - 1);
+                }
+                
+                showNotification(`Successfully deleted ${studentName}`, 'success');
+            } else {
+                showNotification(`Failed to delete ${studentName}: ${data.message}`, 'danger');
+            }
+        })
+        .catch(error => {
+            showNotification(`Error deleting student: ${error}`, 'danger');
+        });
+    }
+}
+
+function printReportCard(studentId, studentName) {
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    if (!term || !academicYear) {
+        showNotification('Please select term and academic year first', 'warning');
+        return;
+    }
+    
+    // Show loading indicator
+    const printBtn = document.querySelector(`button[onclick*="printReportCard('${studentId}'"]`);
+    if (printBtn) {
+        const originalContent = printBtn.innerHTML;
+        printBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        printBtn.disabled = true;
+        
+        // Restore button after 3 seconds (fallback)
+        setTimeout(() => {
+            printBtn.innerHTML = originalContent;
+            printBtn.disabled = false;
+        }, 3000);
+    }
+    
+    // Generate and download PDF report
+    fetch('/api/export-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => {
+        if (response.ok) {
+            // Extract filename from Content-Disposition header
+            const disposition = response.headers.get('Content-Disposition');
+            let filename = `Report_Card_${studentName.replace(' ', '_')}_${term}_${academicYear}.pdf`;
+            
+            if (disposition && disposition.includes('filename=')) {
+                filename = disposition.split('filename=')[1].replace(/"/g, '');
+            }
+            
+            return response.blob().then(blob => ({ blob, filename }));
+        } else {
+            return response.json().then(data => {
+                throw new Error(data.message || 'PDF export failed');
+            });
+        }
+    })
+    .then(({ blob, filename }) => {
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        showNotification(`Report card generated for ${studentName}`, 'success');
+        
+        // Restore button
+        if (printBtn) {
+            printBtn.innerHTML = '<i class="fas fa-print"></i>';
+            printBtn.disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Print error:', error);
+        showNotification(`Failed to generate report card: ${error.message}`, 'danger');
+        
+        // Restore button
+        if (printBtn) {
+            printBtn.innerHTML = '<i class="fas fa-print"></i>';
+            printBtn.disabled = false;
+        }
+    });
+}
+
+
+function saveAllMarks() {
+    const rows = document.querySelectorAll('#marksTable tbody tr');
+    let hasInvalidMarks = false;
+    let invalidMarkInfo = [];
+    let savePromises = [];
+    
+    rows.forEach(row => {
+        const studentId = row.getAttribute('data-student-id');
+        const marks = {};
+        let studentHasInvalidMarks = false;
+        
+        row.querySelectorAll('.mark-input').forEach(input => {
+            const subject = input.getAttribute('data-subject');
+            const value = input.value.trim();
+            
+            if (value) {
+                const markValue = parseInt(value);
+                
+                // Validate mark is between 0-100
+                if (isNaN(markValue) || markValue < 0 || markValue > 100) {
+                    hasInvalidMarks = true;
+                    studentHasInvalidMarks = true;
+                    invalidMarkInfo.push({
+                        studentId: studentId,
+                        subject: subject,
+                        mark: value,
+                        studentName: row.querySelector('.student-name-column strong').textContent
+                    });
+                    
+                    // Highlight invalid input
+                    input.classList.add('border-danger');
+                    input.classList.add('bg-danger-subtle');
+                } else {
+                    marks[subject] = markValue;
+                    
+                    // Clear any previous error styling
+                    input.classList.remove('border-danger');
+                    input.classList.remove('bg-danger-subtle');
+                }
+            }
+        });
+        
+        // Save valid marks for this student (even if other students have invalid marks)
+        if (Object.keys(marks).length > 0 && !studentHasInvalidMarks) {
+            const term = document.getElementById('termSelect').value;
+            const academicYear = document.getElementById('yearSelect').value;
+            
+            const savePromise = fetch('/api/save-student-marks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    student_id: studentId,
+                    marks: marks,
+                    term: term,
+                    academic_year: academicYear,
+                    form_level: formLevel
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Update input styling
+                    row.querySelectorAll('.mark-input').forEach(input => {
+                        input.classList.remove('border-danger');
+                        input.classList.add('border-success');
+                        input.defaultValue = input.value;
+                    });
+                    return { success: true, studentId: studentId };
+                } else {
+                    return { success: false, studentId: studentId, error: data.message };
+                }
+            })
+            .catch(error => {
+                console.error('Save error:', error);
+                return { success: false, studentId: studentId, error: error.message };
+            });
+            
+            savePromises.push(savePromise);
+        }
+    });
+    
+    // Wait for all saves to complete
+    Promise.all(savePromises).then(results => {
+        const savedCount = results.filter(r => r.success).length;
+        const failedSaves = results.filter(r => !r.success);
+        
+        if (hasInvalidMarks && savedCount > 0) {
+            // Show mixed success/error message
+            let errorMessage = `Successfully saved marks for ${savedCount} student(s).\n\n`;
+            errorMessage += 'Marks Exceed Normal Range:\n\n';
+            invalidMarkInfo.forEach(info => {
+                errorMessage += `${info.studentName} - ${info.subject}: ${info.mark} (must be 0-100)\n`;
+            });
+            errorMessage += '\nPlease correct these marks and save again.';
+            
+            showNotification(errorMessage, 'warning');
+            
+            // Scroll to first invalid mark
+            const firstInvalidInput = document.querySelector('.mark-input.border-danger');
+            if (firstInvalidInput) {
+                firstInvalidInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                firstInvalidInput.focus();
+            }
+        } else if (hasInvalidMarks) {
+            // Show only error message
+            let errorMessage = 'Marks Exceed Normal Range:\n\n';
+            invalidMarkInfo.forEach(info => {
+                errorMessage += `${info.studentName} - ${info.subject}: ${info.mark} (must be 0-100)\n`;
+            });
+            errorMessage += '\nPlease correct these marks before saving.';
+            
+            showNotification(errorMessage, 'danger');
+            
+            // Scroll to first invalid mark
+            const firstInvalidInput = document.querySelector('.mark-input.border-danger');
+            if (firstInvalidInput) {
+                firstInvalidInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                firstInvalidInput.focus();
+            }
+        } else if (savedCount > 0) {
+            showNotification(`Successfully saved marks for ${savedCount} student(s)`, 'success');
+        } else if (savePromises.length === 0) {
+            showNotification('No marks to save. Please enter some marks first.', 'info');
+        } else {
+            showNotification('Failed to save marks. Please try again.', 'danger');
+        }
+    });
+}
+
+function loadAllMarks() {
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    const rows = document.querySelectorAll('#marksTable tbody tr');
+    let loadedCount = 0;
+    let totalRows = rows.length;
+    
+    rows.forEach(row => {
+        const studentId = row.getAttribute('data-student-id');
+        
+        fetch(`/api/load-student-marks?student_id=${studentId}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.marks) {
+                // Fill in the marks
+                Object.keys(data.marks).forEach(subject => {
+                    const input = row.querySelector(`input[data-subject="${subject}"]`);
+                    if (input) {
+                        input.value = data.marks[subject];
+                        // Add visual indicator for loaded marks
+                        input.classList.add('border-success');
+                        input.style.backgroundColor = '#f8fff8';
+                    }
+                });
+                loadedCount++;
+            }
+        })
+        .catch(error => {
+            console.error('Error loading marks for student', studentId, error);
+        })
+        .finally(() => {
+            // Update progress
+            if (loadedCount === totalRows) {
+                showNotification(`Loaded existing marks for ${loadedCount} students`, 'success');
+            }
+        });
+    });
+    
+    showNotification('Loading existing marks...', 'info');
+}
+
+// Auto-calculate grades as marks are entered
+document.addEventListener('DOMContentLoaded', function() {
+    const markInputs = document.querySelectorAll('.mark-input');
+    
+    markInputs.forEach(input => {
+        input.addEventListener('input', function() {
+            const mark = parseInt(this.value);
+            if (!isNaN(mark)) {
+                // Visual feedback for grade ranges
+                this.classList.remove('border-success', 'border-warning', 'border-danger');
+                
+                if (formLevel <= 2) {
+                    if (mark >= 80) this.classList.add('border-success');
+                    else if (mark >= 50) this.classList.add('border-warning');
+                    else this.classList.add('border-danger');
+                } else {
+                    if (mark >= 75) this.classList.add('border-success');
+                    else if (mark >= 50) this.classList.add('border-warning');
+                    else this.classList.add('border-danger');
+                }
+            }
+        });
+    });
+    
+    // Add event listeners for term and academic year changes
+    const termSelect = document.getElementById('termSelect');
+    const yearSelect = document.getElementById('yearSelect');
+    
+    if (termSelect && yearSelect) {
+        function updateSelectedPeriod() {
+            const term = termSelect.value;
+            const academicYear = yearSelect.value;
+            
+            if (term && academicYear) {
+                // Update the selected period in settings
+                fetch('/api/update-selected-period', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        term: term,
+                        academic_year: academicYear
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log(`Updated selected period to ${term} ${academicYear}`);
+                    } else {
+                        console.error('Failed to update selected period:', data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating selected period:', error);
+                });
+            }
+        }
+        
+        termSelect.addEventListener('change', updateSelectedPeriod);
+        yearSelect.addEventListener('change', updateSelectedPeriod);
+        
+        // Update on initial load if both values are set
+        updateSelectedPeriod();
+    }
+});
+
+function showNotification(message, type) {
+    const alertDiv = document.createElement('div');
+    const alertClass = type === 'success' ? 'notification-success' : type === 'error' ? 'notification-error' : `alert-${type}`;
+    alertDiv.className = `alert ${alertClass} alert-dismissible fade show position-fixed`;
+    alertDiv.style.cssText = 'top: 80px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 0.5rem; box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);';
+    alertDiv.innerHTML = `
+        <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-triangle' : 'info-circle'} me-2"></i>
+        ${message}
+        <button type="button" class="btn-close ${type === 'success' || type === 'error' ? 'btn-close-white' : ''}" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+
+function generateQuickReport() {
+    const studentId = document.getElementById('reportStudentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    if (!studentId) {
+        alert('Please select a student');
+        return;
+    }
+    
+    fetch('/api/generate-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('reportPreview').textContent = data.report;
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error generating report: ' + error.message);
+    });
+}
+
+function exportQuickReport() {
+    const studentId = document.getElementById('reportStudentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    if (!studentId) {
+        showNotification('Please select a student first', 'error');
+        return;
+    }
+    
+    // Show loading indicator
+    const exportBtn = document.querySelector('button[onclick="exportQuickReport()"]');
+    const originalText = exportBtn.innerHTML;
+    exportBtn.innerHTML = '<div class="loading-spinner"></div> Exporting...';
+    exportBtn.disabled = true;
+    
+    fetch('/api/export-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => {
+        if (response.ok) {
+            return response.blob();
+        } else {
+            // Try to get error message from response
+            return response.json().then(errorData => {
+                throw new Error(errorData.message || 'Export failed');
+            });
+        }
+    })
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Report_${studentId}_${term}_${academicYear}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showNotification('Report exported successfully!', 'success');
+    })
+    .catch(error => {
+        console.error('Export error:', error);
+        showNotification('Error exporting report: ' + error.message, 'error');
+    })
+    .finally(() => {
+        // Restore button
+        exportBtn.innerHTML = originalText;
+        exportBtn.disabled = false;
+    });
+}
+
+function previewPrint() {
+    const studentId = document.getElementById('printStudentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    if (!studentId) {
+        alert('Please select a student');
+        return;
+    }
+    
+    fetch('/api/generate-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('printPreview').innerHTML = `<pre style="font-family: monospace; white-space: pre-wrap;">${data.report}</pre>`;
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error generating preview: ' + error.message);
+    });
+}
+
+function printReport() {
+    const printContent = document.getElementById('printPreview').innerHTML;
+    if (!printContent || printContent.includes('Select a student')) {
+        alert('Please preview the report first');
+        return;
+    }
+    
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <html>
+        <head>
+            <title>Student Report Card</title>
+            <style>
+                body { font-family: monospace; margin: 20px; }
+                pre { white-space: pre-wrap; }
+                @media print {
+                    body { margin: 0; }
+                }
+            </style>
+        </head>
+        <body>
+            ${printContent}
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+}
+
+function deleteStudent(studentId, studentName) {
+    if (!confirm(`Are you sure you want to delete ${studentName}?\n\nThis will permanently remove the student and all their marks.`)) {
+        return;
+    }
+    
+    fetch('/api/delete-student', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: studentId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(`${studentName} deleted successfully`, 'success');
+            location.reload(); // Refresh to remove deleted student
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error deleting student: ' + error.message);
+    });
+}
+
+function testExport() {
+    const studentId = document.getElementById('reportStudentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    if (!studentId) {
+        showNotification('Please select a student first', 'error');
+        return;
+    }
+    
+    fetch('/api/test-export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(data.message, 'success');
+        } else {
+            showNotification(data.message, 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('Test failed: ' + error.message, 'error');
+    });
+}
+
+function quickPrintReport(studentId) {
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('yearSelect').value;
+    
+    // Find the button that was clicked
+    const button = document.querySelector(`button[onclick="quickPrintReport('${studentId}')"]`);
+    const originalContent = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    button.disabled = true;
+    
+    // Download PDF report
+    fetch('/api/export-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => {
+        if (response.ok) {
+            return response.blob();
+        } else {
+            return response.json().then(data => {
+                throw new Error(data.message || 'PDF export failed');
+            });
+        }
+    })
+    .then(blob => {
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = `student_${studentId}_${term}_${academicYear}_report.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Clean up
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        // Also try to print the PDF automatically (browser dependent)
+        const printWindow = window.open(url, '_blank');
+        if (printWindow) {
+            printWindow.onload = function() {
+                setTimeout(() => {
+                    printWindow.print();
+                }, 1000);
+            };
+        }
+        
+        showNotification('PDF report downloaded and sent to printer!', 'success');
+    })
+    .catch(error => {
+        showNotification('PDF export failed: ' + error.message, 'error');
+    })
+    .finally(() => {
+        // Restore button state
+        button.innerHTML = originalContent;
+        button.disabled = false;
+    });
+}
+        
+        // Subject focus and navigation functionality
+        let currentSubjectIndex = -1; // -1 means all subjects
+        let subjects = [];
+        
+        // Initialize subjects array
+        document.addEventListener('DOMContentLoaded', function() {
+            // Get subject names from table headers
+            const subjectHeaders = document.querySelectorAll('.subject-column');
+            subjects = Array.from(subjectHeaders).map(header => header.textContent.trim());
+            
+            // Add click handlers to subject headers
+            subjectHeaders.forEach((header, index) => {
+                header.style.cursor = 'pointer';
+                header.title = `Click to focus on ${header.textContent.trim()}`;
+                
+                header.addEventListener('click', function() {
+                    focusOnSubject(index);
+                });
+            });
+            
+            // Add keyboard navigation
+            document.addEventListener('keydown', function(e) {
+                if (e.target.tagName === 'INPUT' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+                    e.preventDefault();
+                    
+                    if (e.key === 'ArrowLeft' && currentSubjectIndex > 0) {
+                        focusOnSubject(currentSubjectIndex - 1);
+                    } else if (e.key === 'ArrowRight' && currentSubjectIndex < subjects.length - 1) {
+                        focusOnSubject(currentSubjectIndex + 1);
+                    }
+                }
+                
+                if (e.key === 'Escape') {
+                    focusOnSubject(-1); // Return to all subjects view
+                }
+            });
+        });
+        
+        function focusOnSubject(index) {
+            currentSubjectIndex = index;
+            
+            // Highlight the focused subject column in both frozen headers and main headers
+            const allFrozenHeaders = document.querySelectorAll('.subject-header-frozen');
+            const allMainHeaders = document.querySelectorAll('.subject-column');
+            
+            allFrozenHeaders.forEach((header, i) => {
+                if (i === index) {
+                    header.style.background = 'linear-gradient(135deg, #ffc107 0%, #ff6b6b 100%)';
+                    header.style.transform = 'scale(1.05)';
+                    header.style.boxShadow = '0 4px 8px rgba(255,193,7,0.3)';
+                } else {
+                    header.style.background = 'linear-gradient(135deg, #6c757d 0%, #495057 100%)';
+                    header.style.transform = 'scale(1)';
+                    header.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                }
+            });
+            
+            allMainHeaders.forEach((header, i) => {
+                if (i === index) {
+                    header.style.backgroundColor = '#fff3cd';
+                    header.style.borderLeft = '3px solid #ffc107';
+                    header.style.transform = 'scale(1.02)';
+                } else {
+                    header.style.backgroundColor = '';
+                    header.style.borderLeft = '';
+                    header.style.transform = 'scale(1)';
+                }
+            });
+            
+            // Focus first input in the focused column
+            if (index >= 0) {
+                setTimeout(() => {
+                    const firstInput = document.querySelector(`tr:nth-child(3) .subject-column:nth-child(${index + 3}) input`);
+                    if (firstInput) {
+                        firstInput.focus();
+                        firstInput.select();
+                    }
+                }, 100);
+            }
+        }
+</script>
+{% endblock %}
