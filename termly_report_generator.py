@@ -534,7 +534,10 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
                 with open(pdf_filename, 'rb') as f:
                     pdf_bytes = f.read()
                 print(f"DEBUG: Read {len(pdf_bytes)} bytes from PDF")
-                os.remove(pdf_filename)  # Clean up temporary file
+                try:
+                    os.remove(pdf_filename)  # Clean up temporary file
+                except OSError as cleanup_error:
+                    print(f"DEBUG: Could not clean up {pdf_filename}: {cleanup_error}")
                 return pdf_bytes
             else:
                 print(f"DEBUG: PDF file not found or not generated: {pdf_filename}")
@@ -555,8 +558,9 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
         if not school_id:
             school_id = student.get('school_id')
             
+        import uuid
         student_name = f"{student['first_name']}_{student['last_name']}"
-        filename = f"{student_name}_{term}_Progress_Report_{academic_year.replace('-', '_')}.pdf"
+        filename = f"{student_name}_{term}_Progress_Report_{academic_year.replace('-', '_')}_{uuid.uuid4().hex[:8]}.pdf"
         
         report = self.generate_progress_report(student_id, term, academic_year, school_id)
         print(f"DEBUG: Generated report text: {len(report) if report else 0} characters")
