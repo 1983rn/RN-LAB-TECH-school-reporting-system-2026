@@ -868,7 +868,26 @@ def settings():
         for form_level in [1, 2, 3, 4]:
             subject_teachers_by_form[form_level] = db.get_subject_teachers(form_level=form_level, school_id=school_id)
 
-    return render_template('settings.html', terms=terms, academic_years=academic_years, settings=settings_obj, available_years=available_years, available_terms=available_terms, subject_teachers=subject_teachers_by_form)
+    import json as json_mod
+    junior_grading_json = json_mod.dumps(settings_obj.get('junior_grading_rules', []))
+    senior_grading_json = json_mod.dumps(settings_obj.get('senior_grading_rules', []))
+
+    return render_template('settings.html', terms=terms, academic_years=academic_years, settings=settings_obj, available_years=available_years, available_terms=available_terms, subject_teachers=subject_teachers_by_form, junior_grading_json=junior_grading_json, senior_grading_json=senior_grading_json)
+
+@app.route('/grading-config')
+def grading_config():
+    """Grading system configuration page"""
+    school_id = get_current_school_id()
+    if not school_id:
+        return redirect(url_for('login'))
+    
+    settings_obj = db.get_school_settings(school_id)
+    
+    import json as json_mod
+    junior_grading_json = json_mod.dumps(settings_obj.get('junior_grading_rules', []))
+    senior_grading_json = json_mod.dumps(settings_obj.get('senior_grading_rules', []))
+    
+    return render_template('grading_config.html', settings=settings_obj, junior_grading_json=junior_grading_json, senior_grading_json=senior_grading_json)
 
 @app.route('/api/save-student-marks', methods=['POST'])
 def api_save_student_marks():
@@ -1016,7 +1035,7 @@ def api_generate_report_card():
             'message': f'Error generating report: {str(e)}'
         })
 
-@app.route('/api/export-report-card', methods=['POST'])
+@app.route('/api/export-report-card', methods=['GET', 'POST'], strict_slashes=False)
 def api_export_report_card():
     """Export report card as PDF"""
     try:
@@ -1024,46 +1043,78 @@ def api_export_report_card():
         if not school_id:
             return jsonify({'success': False, 'message': 'School authentication required'}), 403
         
-        data = request.get_json()
-        student_id = int(data['student_id'])
-        term = data['term']
-        academic_year = data['academic_year']
+        # Support both JSON POST and GET/Form parameters
+        if request.method == 'POST' and request.is_json:
+            data = request.get_json()
+            student_id_raw = data.get('student_id')
+            term = data.get('term')
+            academic_year = data.get('academic_year')
+        else:
+            # Fallback to args (GET) or form (POST)
+            student_id_raw = request.args.get('student_id') or request.form.get('student_id')
+            term = request.args.get('term') or request.form.get('term')
+            academic_year = request.args.get('academic_year') or request.form.get('academic_year')
+            
+        if not student_id_raw or not term or not academic_year:
+            return jsonify({'success': False, 'message': 'Missing required parameters: student_id, term, and academic_year are required'}), 400
+            
+        student_id = int(student_id_raw)
         
-        print(f"DEBUG: Generating PDF for student_id={student_id}, term={term}, year={academic_year}, school_id={school_id}")
+        print(f"DEBUG [PDF Export]: Request for student_id={student_id}, term='{term}', year='{academic_year}', school_id={school_id}")
         
-        # Check if student exists and has marks
+        # Check if student exists
         student = db.get_student_by_id(student_id)
         if not student:
-            return jsonify({'success': False, 'message': 'Student not found'}), 404
+            print(f"DEBUG [PDF Export]: Student ID {student_id} not found in database")
+            return jsonify({'success': False, 'message': f'Student with ID {student_id} not found'}), 404
+        
+        # Verify school ID
+        if student.get('school_id') and student['school_id'] != school_id:
+             print(f"DEBUG [PDF Export]: Unauthorized - Student {student_id} belongs to school {student['school_id']}, not {school_id}")
+             return jsonify({'success': False, 'message': 'Unauthorized access to student record'}), 403
+
+        print(f"DEBUG [PDF Export]: Generating report for learner: {student['first_name']} {student['last_name']} (ID: {student_id})")
         
         marks = db.get_student_marks(student_id, term, academic_year, school_id)
         if not marks:
+            print(f"DEBUG [PDF Export]: No marks found for student {student_id} in {term} {academic_year}")
             return jsonify({'success': False, 'message': 'No marks found for this student'}), 404
         
-        print(f"DEBUG: Found {len(marks)} subjects for student {student['first_name']} {student['last_name']}")
+        print(f"DEBUG [PDF Export]: Found {len(marks)} subjects for {student['first_name']} {student['last_name']}")
         
         pdf_bytes = generator.export_report_to_pdf_bytes(student_id, term, academic_year, school_id)
         
-        if pdf_bytes and len(pdf_bytes) > 0:
-            filename = f"{student['first_name']}_{student['last_name']}_Report_{term.replace(' ','_')}_{academic_year.replace('-','_')}.pdf"
+        if pdf_bytes and len(pdf_bytes) > 100:  # Valid PDFs are usually > 100 bytes
+            # Verify PDF signature (%PDF-)
+            if not pdf_bytes.startswith(b'%PDF-'):
+                 print(f"DEBUG [PDF Export]: Warning! Generated bytes for {student_id} do not start with %PDF- signature.")
+                 # Fallback to check if it's text
+                 if b'================' in pdf_bytes or b'Student Name:' in pdf_bytes:
+                     return jsonify({'success': False, 'message': 'Internal error: PDF generator returned text instead of PDF binary. Verify library installation.'}), 500
+
+            safe_name = f"{student['first_name']}_{student['last_name']}".replace(' ', '_')
+            filename = f"{safe_name}_Report_{term.replace(' ','_')}_{academic_year.replace('-','_')}.pdf"
+            
+            print(f"DEBUG [PDF Export]: Successfully generated {len(pdf_bytes)} bytes for {filename}")
             
             response = make_response(pdf_bytes)
             response.headers['Content-Type'] = 'application/pdf'
             response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
             return response
         else:
+            print(f"DEBUG [PDF Export]: PDF generation returned invalid or empty content for student {student_id}")
             return jsonify({
                 'success': False,
-                'message': 'Failed to generate PDF report - empty PDF generated'
+                'message': 'Failed to generate PDF report - empty or invalid content. Please check server logs.'
             }), 500
         
     except Exception as e:
         import traceback
-        print(f"ERROR in PDF export: {e}")
+        print(f"CRITICAL [PDF Export Error]: {str(e)}")
         print(traceback.format_exc())
         return jsonify({
             'success': False,
-            'message': f'Error exporting report: {str(e)}'
+            'message': f'Internal error during PDF export: {str(e)}'
         }), 500
 
 @app.route('/api/print-all-reports')
@@ -1586,16 +1637,16 @@ def api_update_selected_period():
         
         # Update only the selected term and academic year
         updated_settings = {
-            'school_name': current_settings.get('school_name', ''),
-            'school_address': current_settings.get('school_address', ''),
-            'school_phone': current_settings.get('school_phone', ''),
-            'school_email': current_settings.get('school_email', ''),
-            'pta_fund': current_settings.get('pta_fund', ''),
-            'sdf_fund': current_settings.get('sdf_fund', ''),
-            'boarding_fee': current_settings.get('boarding_fee', ''),
-            'next_term_begins': current_settings.get('next_term_begins', ''),
-            'boys_uniform': current_settings.get('boys_uniform', ''),
-            'girls_uniform': current_settings.get('girls_uniform', ''),
+            'school_name': current_settings.get('school_name') or '',
+            'school_address': current_settings.get('school_address') or '',
+            'school_phone': current_settings.get('school_phone') or '',
+            'school_email': current_settings.get('school_email') or '',
+            'pta_fund': current_settings.get('pta_fund') or '',
+            'sdf_fund': current_settings.get('sdf_fund') or '',
+            'boarding_fee': current_settings.get('boarding_fee') or '',
+            'next_term_begins': current_settings.get('next_term_begins') or '',
+            'boys_uniform': current_settings.get('boys_uniform') or '',
+            'girls_uniform': current_settings.get('girls_uniform') or '',
             'selected_term': term,
             'selected_academic_year': academic_year
         }

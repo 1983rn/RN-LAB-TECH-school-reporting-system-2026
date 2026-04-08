@@ -603,7 +603,7 @@ Created by: RN_LAB_TECH
         
         # Get school name from settings
         school_settings = self.db.get_school_settings()
-        school_name = school_settings.get('school_name', 'SECONDARY SCHOOL')
+        school_name = school_settings.get('school_name') or 'SECONDARY SCHOOL'
         
         report = f"""
 {'='*90}

@@ -14,8 +14,49 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Tuple
+from datetime import datetime
 
-from school_database import SchoolDatabase
+from school_database import SchoolDatabase, DEFAULT_JUNIOR_GRADING, DEFAULT_SENIOR_GRADING
+
+# PDF Generation Imports
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib import colors
+    from reportlab.platypus.doctemplate import BaseDocTemplate
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
+
+# Custom Document Template for colorful border
+if HAS_REPORTLAB:
+    class BorderedDocTemplate(BaseDocTemplate):
+        def __init__(self, filename, **kwargs):
+            BaseDocTemplate.__init__(self, filename, **kwargs)
+            
+        def draw_border(self, canvas, doc):
+            # Draw colorful border
+            canvas.saveState()
+            
+            # Outer border - Blue
+            canvas.setStrokeColor(colors.blue)
+            canvas.setLineWidth(4)
+            canvas.rect(20, 20, A4[0]-40, A4[1]-40)
+            
+            # Middle border - Green
+            canvas.setStrokeColor(colors.green)
+            canvas.setLineWidth(2)
+            canvas.rect(30, 30, A4[0]-60, A4[1]-60)
+            
+            # Inner border - Red
+            canvas.setStrokeColor(colors.red)
+            canvas.setLineWidth(1)
+            canvas.rect(40, 40, A4[0]-80, A4[1]-80)
+            
+            canvas.restoreState()
 
 # Ensure reports directory exists
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reports')
@@ -49,6 +90,37 @@ class TermlyReportGenerator:
         self.girls_uniform = girls_uniform
         # Malawi Government emblem image path
         self.emblem_path = emblem_path
+    
+    def _build_grading_string(self, form_level: int, school_id: int = None) -> str:
+        """Build a grading key string like 'A(80-100) B(70-79) ...' from school settings.
+        
+        Falls back to module-level defaults if no custom rules are saved.
+        """
+        # Pick the right default
+        if form_level in [1, 2]:
+            rules = list(DEFAULT_JUNIOR_GRADING)
+        else:
+            rules = list(DEFAULT_SENIOR_GRADING)
+        
+        # Try to load custom rules from this school's settings
+        if school_id:
+            try:
+                settings = self.db.get_school_settings(school_id)
+                if form_level in [1, 2]:
+                    custom = settings.get('junior_grading_rules')
+                else:
+                    custom = settings.get('senior_grading_rules')
+                if custom and isinstance(custom, list) and len(custom) > 0:
+                    rules = custom
+            except Exception:
+                pass
+        
+        # Sort by min descending (highest bracket first)
+        rules_sorted = sorted(rules, key=lambda r: r['min'], reverse=True)
+        
+        # Build compact string: "A(80-100) B(70-79) ..."
+        parts = [f"{r['grade']}({r['min']}-{r['max']})" for r in rules_sorted]
+        return ' '.join(parts)
     
     def generate_termly_report_card(self, student_id: int, term: str, academic_year: str = '2024-2025'):
         """Generate a complete termly report card with pass/fail status"""
@@ -97,7 +169,7 @@ class TermlyReportGenerator:
         # Get school settings for header and footer
         settings = self.db.get_school_settings(student.get('school_id'))
         school_name = settings.get('school_name', self.school_name)
-        school_address = settings.get('school_address', 'P.O. Box [NUMBER], [CITY], Malawi')
+        school_address = settings.get('school_address') or 'P.O. Box [NUMBER], [CITY], Malawi'
         
         # Format address lines
         address_lines = school_address.split(', ')
@@ -136,10 +208,11 @@ Subject                Marks Grade Comment      Signature
                 report += f"{subject_name:<20} {'--':>3} {'--':>5} {'Not taken':<12} ____________\n"
         
         # Simple grading system
+        grading_str = self._build_grading_string(student['grade_level'], school_id=None)
         if student['grade_level'] <= 2:
-            report += f"\nGRADING: A(80-100) B(70-79) C(60-69) D(50-59) F(0-49)\n"
+            report += f"\nGRADING: {grading_str}\n"
         else:
-            report += f"\nMSCE GRADING: 1(75-100) 2(70-74) 3(65-69) 4(60-64) 5(55-59) 6(50-54) 7(45-49) 8(40-44) 9(0-39)\n"
+            report += f"\nMSCE GRADING: {grading_str}\n"
         
         # Simple comments
         if stats['overall_status'] == 'PASS':
@@ -327,7 +400,7 @@ For High Performing Students:
         
         # Get school settings
         settings = self.db.get_school_settings(school_id)
-        school_name = settings.get('school_name', 'DEMO SECONDARY SCHOOL')
+        school_name = settings.get('school_name') or 'DEMO SECONDARY SCHOOL'
         
         # Authentic Malawi report card format
         report = f"""
@@ -370,7 +443,7 @@ Subject                Marks Grade Pos  Comment      Signature
                 best_marks = sorted([data['mark'] for data in marks.values()], reverse=True)[:6]
                 grade_points = []
                 for mark in best_marks:
-                    grade = self.db.calculate_grade(mark, form_level) if hasattr(self.db, 'calculate_grade') else ('1' if mark >= 75 else '9')
+                    grade = self.db.calculate_grade(mark, form_level, school_id) if hasattr(self.db, 'calculate_grade') else ('1' if mark >= 75 else '9')
                     grade_points.append(int(grade) if grade.isdigit() else 9)
                 aggregate = sum(grade_points)
             else:
@@ -378,10 +451,11 @@ Subject                Marks Grade Pos  Comment      Signature
             report += f"\n================================================================================\nAggregate Points (Best Six): {aggregate}    Remark: {overall_status}\n"
         
         # Grading system
+        grading_str = self._build_grading_string(form_level, school_id)
         if form_level <= 2:
-            report += f"\nGRADING: A(80-100) B(70-79) C(60-69) D(50-59) F(0-49)\n"
+            report += f"\nGRADING: {grading_str}\n"
         else:
-            report += f"\nMSCE GRADING: 1(75-100) 2(70-74) 3(65-69) 4(60-64) 5(55-59) 6(50-54) 7(45-49) 8(40-44) 9(0-39)\n"
+            report += f"\nMSCE GRADING: {grading_str}\n"
         
         # Teacher comments
         if overall_status == 'PASS':
@@ -550,6 +624,10 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
     
     def export_progress_report(self, student_id: int, term: str, academic_year: str = '2024-2025', school_id: int = None):
         """Export progress report to PDF file"""
+        if not HAS_REPORTLAB:
+            print("ERROR: ReportLab library not found. PDF generation aborted.")
+            return None
+            
         student = self.db.get_student_by_id(student_id)
         if not student:
             return None
@@ -560,341 +638,131 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
             
         import uuid
         student_name = f"{student['first_name']}_{student['last_name']}"
+        print(f"DEBUG [Generator]: Preparing report for {student_name} (ID: {student_id})")
+        
         filename = f"{student_name}_{term}_Progress_Report_{academic_year.replace('-', '_')}_{uuid.uuid4().hex[:8]}.pdf"
         
-        report = self.generate_progress_report(student_id, term, academic_year, school_id)
-        print(f"DEBUG: Generated report text: {len(report) if report else 0} characters")
-        
-        if report:
-            try:
-                from reportlab.lib.pagesizes import A4
-                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame
-                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                from reportlab.lib.units import inch
-                from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-                from reportlab.lib import colors
-                from reportlab.platypus.doctemplate import BaseDocTemplate
-                
-                # Create custom document with colorful border
-                class BorderedDocTemplate(BaseDocTemplate):
-                    def __init__(self, filename, **kwargs):
-                        BaseDocTemplate.__init__(self, filename, **kwargs)
-                        
-                    def draw_border(self, canvas, doc):
-                        # Draw colorful border
-                        canvas.saveState()
-                        
-                        # Outer border - Blue
-                        canvas.setStrokeColor(colors.blue)
-                        canvas.setLineWidth(4)
-                        canvas.rect(20, 20, A4[0]-40, A4[1]-40)
-                        
-                        # Middle border - Green
-                        canvas.setStrokeColor(colors.green)
-                        canvas.setLineWidth(2)
-                        canvas.rect(30, 30, A4[0]-60, A4[1]-60)
-                        
-                        # Inner border - Red
-                        canvas.setStrokeColor(colors.red)
-                        canvas.setLineWidth(1)
-                        canvas.rect(40, 40, A4[0]-80, A4[1]-80)
-                        
-                        canvas.restoreState()
-                
-                doc = BorderedDocTemplate(filename, pagesize=A4, topMargin=0.8*inch, bottomMargin=0.8*inch, leftMargin=0.8*inch, rightMargin=0.8*inch)
-                
-                # Create frame and page template with border
-                frame = Frame(0.8*inch, 0.8*inch, A4[0]-1.6*inch, A4[1]-1.6*inch, leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0)
-                template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
-                doc.addPageTemplates([template])
-                styles = getSampleStyleSheet()
-                story = []
-                
-                # Get school settings and student info for PDF processing
-                settings = self.db.get_school_settings(school_id)
-                school_name = settings.get('school_name', 'DEMO SECONDARY SCHOOL')
-                student_info = self.db.get_student_by_id(student_id)
-                form_level = student_info['grade_level'] if student_info else 1
-                
-                # Add logo if exists - smaller for A4 fit
-                logo_path = "Malawi Government logo.png"
-                if os.path.exists(logo_path):
-                    try:
-                        logo = Image(logo_path, width=0.8*inch, height=0.8*inch)
-                        story.append(logo)
-                        story.append(Spacer(1, 6))
-                    except:
-                        pass
-                
-                # Create styles with black text and background colors only
-                school_name_style = ParagraphStyle('SchoolName', parent=styles['Heading1'], fontSize=16, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-                address_style = ParagraphStyle('Address', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-                progress_style = ParagraphStyle('Progress', parent=styles['Heading1'], fontSize=14, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-                normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=colors.black)
-                section_style = ParagraphStyle('Section', parent=styles['Normal'], fontSize=10, fontName='Helvetica-Bold', textColor=colors.black)
-                
-                # Add school header with reduced spacing for Forms 3-4
-                spacing = 2 if form_level >= 3 else 4
-                story.append(Paragraph(f"<b>{school_name}</b>", school_name_style))
-                story.append(Spacer(1, spacing))
-                
-                # Add school address from settings
-                school_address = settings.get('school_address', 'P.O. Box [NUMBER], [CITY], Malawi')
-                address_lines = school_address.split(', ')
-                for line in address_lines:
-                    story.append(Paragraph(f"<b>{line.strip()}</b>", address_style))
-                story.append(Spacer(1, spacing))
-                
-                # Add progress report title
-                story.append(Paragraph(f"<b>PROGRESS REPORT</b>", progress_style))
-                story.append(Spacer(1, spacing))
-                
+        # Check if marks exist
+        marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
+        if not marks:
+            print(f"DEBUG [Generator]: No marks found for {student_name}")
+            return None
 
-                
-                # Build table data directly from marks data
-                marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
-                subject_teachers = self.db.get_subject_teachers(form_level, school_id)
-                
-                # Create table with actual data
-                table_data = [['Subject', 'Marks', 'Grade', 'Position', 'Teachers Comment', 'Signature']]
-                
-                for subject in self.standard_subjects:
-                    if subject in marks:
-                        mark = marks[subject]['mark']
-                        grade = marks[subject]['grade']
-                        position = self.db.get_subject_position(student_id, subject, term, academic_year, form_level)
-                        comment = self.db.get_teacher_comment(grade)
-                        teacher = subject_teachers.get(subject, f"{subject} Teacher F{form_level}")
-                        table_data.append([subject, str(mark), grade, str(position), comment, teacher[:15]])
-                    else:
-                        table_data.append([subject, '--', '--', '--', 'Not taken', '--'])
-                
-                # Create professional table
-                table = Table(table_data, colWidths=[2*inch, 0.8*inch, 0.8*inch, 0.8*inch, 1.5*inch, 1.2*inch])
-                table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 10),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                    ('TOPPADDING', (0, 0), (-1, 0), 8),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
-                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                    ('FONTSIZE', (0, 1), (-1, -1), 10),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
-                ]))
-                
-                # Add student information with uniform spacing using table
-                student_data = [
-                    ['Serial No:', student_info['student_number']],
-                    ['Student Name:', f"{student_info['first_name']} {student_info['last_name']}"],
-                    ['Term:', term.replace('Term', '').strip()],
-                    ['Form:', str(form_level)],
-                    ['Year:', academic_year]
-                ]
-                
-                student_table = Table(student_data, colWidths=[1.5*inch, 4*inch])
-                student_table.setStyle(TableStyle([
-                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-                    ('TOPPADDING', (0, 0), (-1, -1), 2),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-                    ('VALIGN', (0, 0), (-1, -1), 'TOP')
-                ]))
-                story.append(student_table)
-                
-                # Get position data for PDF
-                position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
-                marks_pdf = self.db.get_student_marks(student_id, term, academic_year, school_id)
-                subject_count = len(marks_pdf)
-                
-                # Check for insufficient subjects
-                if subject_count <= 5:
-                    overall_status_pdf = 'FAIL'
-                    if form_level <= 2:
-                        avg_grade = 'F'
-                        position_info = f"{position_data['position']}/{position_data['total_students']}                    Average Grade: {avg_grade}    Remark: {overall_status_pdf}"
-                    else:
-                        # CRITICAL RULE: Forms 3&4 students with 1-5 subjects MUST get 54 aggregate points
-                        position_data['aggregate_points'] = 54
-                        position_info = f"{position_data['position']}/{position_data['total_students']}                    Aggregate Points: {position_data['aggregate_points']}    Remark: {overall_status_pdf}"
-                else:
-                    if form_level <= 2:
-                        # Calculate average grade for junior forms
-                        if form_level in [1, 2]:
-                            passed_subjects = sum(1 for data in marks_pdf.values() if data['mark'] >= 50)
-                        else:
-                            passed_subjects = sum(1 for data in marks_pdf.values() if data['mark'] >= 40)
-                        english_mark = marks_pdf.get('English', {}).get('mark', 0)
-                        english_passed = self.db.is_english_passed(english_mark, form_level)
-                        overall_status = self.db.determine_pass_fail_status(passed_subjects, english_passed)
-                        
-                        # CRITICAL RULE: Forms 1&2 failed students MUST get F grade
-                        if overall_status == 'FAIL':
-                            avg_grade = 'F'
-                        else:
-                            grades = [marks_pdf[subject]['grade'] for subject in marks_pdf if subject in marks_pdf]
-                            if grades:
-                                grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
-                                for grade in grades:
-                                    if grade in grade_counts:
-                                        grade_counts[grade] += 1
-                                
-                                max_count = max(grade_counts.values())
-                                most_common_grades = [grade for grade, count in grade_counts.items() if count == max_count]
-                                
-                                if len(most_common_grades) == 1:
-                                    avg_grade = most_common_grades[0]
-                                else:
-                                    total_marks = sum(marks_pdf[subject]['mark'] for subject in marks_pdf if subject in marks_pdf)
-                                    average_mark = total_marks / len(marks_pdf)
-                                    avg_grade = self.db.calculate_grade(int(average_mark), form_level)
-                                
-                                # Ensure passing students don't get F grade
-                                if avg_grade == 'F':
-                                    passing_grades = [g for g in grades if g in ['A', 'B', 'C', 'D']]
-                                    if passing_grades:
-                                        pass_grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
-                                        for grade in passing_grades:
-                                            pass_grade_counts[grade] += 1
-                                        
-                                        max_pass_count = max(pass_grade_counts.values())
-                                        most_common_pass_grades = [grade for grade, count in pass_grade_counts.items() if count == max_pass_count]
-                                        
-                                        if len(most_common_pass_grades) == 1:
-                                            avg_grade = most_common_pass_grades[0]
-                                        else:
-                                            total_marks = sum(marks_pdf[subject]['mark'] for subject in marks_pdf if subject in marks_pdf)
-                                            average_mark = total_marks / len(marks_pdf)
-                                            avg_grade = self.db.calculate_grade(int(average_mark), form_level)
-                            else:
-                                avg_grade = 'D'  # Fallback for passed student
-                        
-                        overall_status_pdf = overall_status
-                        position_info = f"{position_data['position']}/{position_data['total_students']}                    Average Grade: {avg_grade}    Remark: {overall_status_pdf}"
-                    else:
-                        # Get pass/fail status for PDF
-                        if form_level in [1, 2]:
-                            passed_subjects_pdf = sum(1 for data in marks_pdf.values() if data['mark'] >= 50)
-                        else:
-                            passed_subjects_pdf = sum(1 for data in marks_pdf.values() if data['mark'] >= 40)
-                        english_mark_pdf = marks_pdf.get('English', {}).get('mark', 0)
-                        english_passed_pdf = self.db.is_english_passed(english_mark_pdf, form_level)
-                        overall_status_pdf = self.db.determine_pass_fail_status(passed_subjects_pdf, english_passed_pdf)
-                        
-                        position_info = f"{position_data['position']}/{position_data['total_students']}                    Aggregate Points: {position_data['aggregate_points']}    Remark: {overall_status_pdf}"
-                
-                # Add position as separate table row
-                position_table = Table([['Position:', position_info]], colWidths=[1.5*inch, 4*inch])
-                position_table.setStyle(TableStyle([
-                    ('ALIGN', (0, 0), (0, 0), 'LEFT'),
-                    ('ALIGN', (1, 0), (1, 0), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-                    ('TOPPADDING', (0, 0), (-1, -1), 2),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-                    ('VALIGN', (0, 0), (-1, -1), 'TOP')
-                ]))
-                story.append(position_table)
-                
-                story.append(Spacer(1, 3 if form_level >= 3 else 6))
-                
-                # Add the table
-                story.append(table)
-                
-                # Add aggregate points for senior forms (left-aligned below table)
-                if form_level >= 3:
-                    story.append(Spacer(1, 2))
-                    story.append(Paragraph(f"<b>**Aggregate Points (Best Six): {position_data['aggregate_points']}    Remark: {overall_status_pdf}**</b>", ParagraphStyle('AggregatePoints', parent=styles['Normal'], fontSize=10, alignment=TA_LEFT, fontName='Helvetica-Bold', textColor=colors.black)))
-                
-                story.append(Spacer(1, 3 if form_level >= 3 else 6))
-                
-                # Define style and spacing for footer based on form level
-                if form_level <= 2:
-                    footer_style = ParagraphStyle('FooterStyle', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
-                    grading_style = footer_style
-                    spacer_size = 3
-                    teacher_comment_spacer = 2
-                else:
-                    # Compact footer for Forms 3 and 4
-                    footer_style = ParagraphStyle('FooterStyleSqueezed', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
-                    grading_style = ParagraphStyle('GradingSqueezed', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.black, leading=10)
-                    spacer_size = 2
-                    teacher_comment_spacer = 2
+        try:
+            doc = BorderedDocTemplate(filename, pagesize=A4, topMargin=0.8*inch, bottomMargin=0.8*inch, leftMargin=0.8*inch, rightMargin=0.8*inch)
+            
+            # Create frame and page template with border
+            frame = Frame(0.8*inch, 0.8*inch, A4[0]-1.6*inch, A4[1]-1.6*inch, leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0)
+            template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
+            doc.addPageTemplates([template])
+            
+            styles = getSampleStyleSheet()
+            story = []
+            
+            # Get school settings
+            settings = self.db.get_school_settings(school_id)
+            school_name = settings.get('school_name') or 'DEMO SECONDARY SCHOOL'
+            form_level = student.get('grade_level', 1)
+            
+            # 1. School Header
+            # Add logo if exists
+            logo_path = "Malawi Government logo.png"
+            if os.path.exists(logo_path):
+                try:
+                    logo = Image(logo_path, width=0.8*inch, height=0.8*inch)
+                    story.append(logo)
+                    story.append(Spacer(1, 6))
+                except:
+                    pass
+            
+            school_name_style = ParagraphStyle('SchoolName', parent=styles['Heading1'], fontSize=16, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            address_style = ParagraphStyle('Address', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            progress_style = ParagraphStyle('Progress', parent=styles['Heading1'], fontSize=14, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=colors.black)
+            
+            spacing = 2 if form_level >= 3 else 4
+            story.append(Paragraph(f"<b>{school_name}</b>", school_name_style))
+            story.append(Spacer(1, spacing))
+            
+            school_address = settings.get('school_address') or 'P.O. Box [NUMBER], [CITY], Malawi'
+            for line in school_address.split(', '):
+                story.append(Paragraph(f"<b>{line.strip()}</b>", address_style))
+            story.append(Spacer(1, spacing))
+            
+            story.append(Paragraph(f"<b>PROGRESS REPORT</b>", progress_style))
+            story.append(Spacer(1, spacing))
+            
+            # 2. Student Info Table
+            student_data = [
+                ['Serial No:', student.get('student_number', 'N/A')],
+                ['Student Name:', f"{student['first_name']} {student['last_name']}"],
+                ['Term:', term.replace('Term', '').strip()],
+                ['Form:', str(form_level)],
+                ['Year:', academic_year]
+            ]
+            student_table = Table(student_data, colWidths=[1.5*inch, 4*inch])
+            student_table.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 10),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ]))
+            story.append(student_table)
+            story.append(Spacer(1, 10))
+            
+            # 3. Marks Table
+            table_data = [['Subject', 'Marks', 'Grade', 'Position', 'Teachers Comment', 'Signature']]
+            
+            def get_simple_comment(g):
+                return {'A': 'Excellent', 'B': 'Very Good', 'C': 'Good', 'D': 'Fair', 'F': 'Poor'}.get(g, 'N/A')
 
-                # Add grading system
-                if form_level <= 2:
-                    story.append(Paragraph(f"<b><u>GRADING:</u> A(80-100) B(70-79) C(60-69) D(50-59) F(0-49)</b>", grading_style))
+            for subject in self.standard_subjects:
+                if subject in marks:
+                    m = marks[subject]['mark']
+                    g = self.db.calculate_grade(m, form_level, school_id)
+                    table_data.append([subject, str(m), g, '--', get_simple_comment(g), '--'])
                 else:
-                    story.append(Paragraph(f"<b><u>MSCE GRADING:</u> 1(75-100) 2(70-74) 3(65-69) 4(60-64) 5(55-59) 6(50-54) 7(45-49) 8(40-44) 9(0-39)</b>", grading_style))
-                story.append(Spacer(1, spacer_size))
-                
-                # Add teacher comments
-                marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
-                subject_count = len(marks)
-                
-                if subject_count <= 5:
-                    # Insufficient subjects
-                    overall_status = 'FAIL'
-                    form_teacher_comment = f"FAILED - Insufficient subjects written ({subject_count}/6 minimum required)."
-                    head_teacher_comment = "FAILED - Must write at least 6 subjects to be eligible for pass."
-                else:
-                    if form_level in [1, 2]:
-                        passed_subjects = sum(1 for data in marks.values() if data['mark'] >= 50)
-                    else:
-                        passed_subjects = sum(1 for data in marks.values() if data['mark'] >= 40)
-                    english_mark = marks.get('English', {}).get('mark', 0)
-                    english_passed = self.db.is_english_passed(english_mark, form_level)
-                    overall_status = self.db.determine_pass_fail_status(passed_subjects, english_passed)
-                    average = sum(data['mark'] for data in marks.values()) / len(marks) if marks else 0
-                    
-                    if overall_status == 'PASS':
-                        form_teacher_comment = f"PASSED - Good performance! Passed {passed_subjects} subjects with {average:.1f}% average."
-                        head_teacher_comment = "PASSED - Well done. Keep up the good work."
-                    else:
-                        form_teacher_comment = f"FAILED - Needs improvement. Focus on weak subjects, especially English."
-                        head_teacher_comment = "FAILED - Extra effort required. Seek help from teachers."
-                
-                story.append(Paragraph(f"<b><u>FORM TEACHERS' COMMENT:</u> {form_teacher_comment}</b>", footer_style))
-                story.append(Paragraph(f"<b><u>HEAD TEACHERS' COMMENT:</u> {head_teacher_comment}</b>", footer_style))
-                story.append(Spacer(1, teacher_comment_spacer))
-                story.append(Paragraph(f"<b><u>FORM TEACHER SIGN:</u> ________________________</b>", footer_style))
-                story.append(Paragraph(f"<b><u>HEAD TEACHER SIGN:</u> ________________________</b>", footer_style))
-                story.append(Spacer(1, spacer_size))
-                
-                # Add fees and uniform information from school settings
-                settings = self.db.get_school_settings(school_id)
-                
-                story.append(Paragraph(f"<b><u>NEXT TERM BEGINS ON:</u> {settings.get('next_term_begins', 'To be announced')}</b>", footer_style))
-                story.append(Paragraph(f"<b><u>FEES</u> - <u>BOARDING FEE:</u> {settings.get('boarding_fee', 'MK 150,000')}</b>", footer_style))
-                story.append(Paragraph(f"<b><u>UNIFORM - GIRLS:</u> {settings.get('girls_uniform', 'White blouse, black skirt, black shoes')}</b>", footer_style))
-                story.append(Paragraph(f"<b><u>UNIFORM - BOYS:</u> {settings.get('boys_uniform', 'White shirt, black trousers, black shoes')}</b>", footer_style))
-                story.append(Spacer(1, spacer_size))
-                
-                # Add footer with centered text
-                # Compact final footer for all forms
-                story.append(Paragraph(f"<b>Generated by: RN_LAB_TECH</b>", ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)))
-                story.append(Paragraph(f"<b>Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}</b>", ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)))
-                
-                doc.build(story)
-                return filename
-            except Exception as e:
-                print(f"Error creating PDF: {e}")
-                # Fallback to text file
-                filename = filename.replace('.pdf', '.txt')
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(report)
-                return filename
-        return None
+                    table_data.append([subject, '--', '--', '--', 'Not taken', '--'])
+            
+            marks_table = Table(table_data, colWidths=[1.8*inch, 0.7*inch, 0.7*inch, 0.7*inch, 1.5*inch, 1.2*inch])
+            marks_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ]))
+            story.append(marks_table)
+            story.append(Spacer(1, 10))
+            
+            # 4. Overall Position
+            position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
+            summary_txt = f"Position: {position_data.get('position', '--')}/{position_data.get('total_students', '--')}"
+            if form_level >= 3:
+                summary_txt += f"    Aggregate Points: {position_data.get('aggregate_points', '--')}"
+            
+            story.append(Paragraph(f"<b>{summary_txt}</b>", normal_style))
+            story.append(Spacer(1, 15))
+            
+            # 5. Signatures
+            story.append(Paragraph(f"<b>FORM TEACHER SIGN:</b> ________________________", normal_style))
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(f"<b>HEAD TEACHER SIGN:</b> ________________________", normal_style))
+            
+            # 6. Footer
+            story.append(Spacer(1, 20))
+            footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER)
+            story.append(Paragraph(f"Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
+            
+            doc.build(story)
+            return filename
+            
+        except Exception as e:
+            print(f"CRITICAL Error creating PDF: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def export_report_to_file(self, student_id: int, term: str, academic_year: str = '2024-2025', 
                              filename: str = None):
