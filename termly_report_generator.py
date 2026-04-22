@@ -11,10 +11,13 @@ import os
 import io
 import tempfile
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Tuple
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from school_database import SchoolDatabase, DEFAULT_JUNIOR_GRADING, DEFAULT_SENIOR_GRADING
 
@@ -69,12 +72,12 @@ logger = logging.getLogger(__name__)
 class TermlyReportGenerator:
     """Class for generating professional termly report cards with pass/fail determination"""
     
-    def __init__(self, school_name="[SCHOOL NAME]", school_address="[SCHOOL ADDRESS]", school_phone="[PHONE]", school_email="[EMAIL]", pta_fee="[PTA FEE AMOUNT]", sdf_fee="[SDF FEE AMOUNT]", boarding_fee="[BOARDING FEE AMOUNT]", boys_uniform="[BOYS UNIFORM REQUIREMENTS]", girls_uniform="[GIRLS UNIFORM REQUIREMENTS]", emblem_path=None):
+    def __init__(self, school_name="[ENTER SCHOOL NAME]", school_address="[ENTER ADDRESS]", school_phone="[ENTER PHONE]", school_email="[ENTER EMAIL]", pta_fee="", sdf_fee="", boarding_fee="", boys_uniform="", girls_uniform="", emblem_path=None):
         self.db = SchoolDatabase()
         self.standard_subjects = [
             'Agriculture', 'Biology', 'Bible Knowledge', 'Chemistry', 
-            'Chichewa', 'Computer Studies', 'English', 'Geography', 
-            'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics'
+            'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+            'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics'
         ]
         # School information - editable fields
         self.school_name = school_name
@@ -118,15 +121,24 @@ class TermlyReportGenerator:
         # Sort by min descending (highest bracket first)
         rules_sorted = sorted(rules, key=lambda r: r['min'], reverse=True)
         
-        # Build compact string: "A(80-100) B(70-79) ..."
-        parts = [f"{r['grade']}({r['min']}-{r['max']})" for r in rules_sorted]
+        # Build compact string
+        if form_level in [1, 2]:
+            # Junior: "A(80-100) B(70-79) C(60-69) D(50-59) F(0-49)"
+            parts = [f"{r['grade']}({r['min']}-{r['max']})" for r in rules_sorted]
+        else:
+            # Senior: "1 (75-100) 2 (70-74) ... 9 (0-39)"
+            parts = [f"{r['grade']} ({r['min']}-{r['max']})" for r in rules_sorted]
         return ' '.join(parts)
     
-    def generate_termly_report_card(self, student_id: int, term: str, academic_year: str = '2024-2025'):
+    def generate_termly_report_card(self, student_id: int, term: str, academic_year: str = '2024-2025', school_id: int = None):
         """Generate a complete termly report card with pass/fail status"""
         try:
-            report_data = self.db.generate_termly_report_card(student_id, term, academic_year)
-            return self.format_report_card(report_data)
+            # First get the student to ensure it belongs to the school
+            student = self.db.get_student_by_id(student_id, school_id)
+            if not student:
+                return None
+            
+            marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
         except Exception as e:
             print(f"Error generating report card: {e}")
             return None
@@ -134,8 +146,8 @@ class TermlyReportGenerator:
     def generate_progress_report(self, student_id: int, term: str, academic_year: str = '2024-2025', school_id: int = None):
         """Generate progress report using student marks from database"""
         try:
-            # Get student info
-            student = self.db.get_student_by_id(student_id)
+            # Get student info - strictly isolated
+            student = self.db.get_student_by_id(student_id, school_id)
             if not student:
                 return None
             
@@ -169,7 +181,7 @@ class TermlyReportGenerator:
         # Get school settings for header and footer
         settings = self.db.get_school_settings(student.get('school_id'))
         school_name = settings.get('school_name', self.school_name)
-        school_address = settings.get('school_address') or 'P.O. Box [NUMBER], [CITY], Malawi'
+        school_address = settings.get('school_address', 'P.O. Box [NUMBER], [CITY], Malawi')
         
         # Format address lines
         address_lines = school_address.split(', ')
@@ -177,12 +189,10 @@ class TermlyReportGenerator:
         
         # Simple header
         report = f"""
-================================================================================
                             {school_name}
 {formatted_address}
 
                          PROGRESS REPORT
-================================================================================
 
 Serial No:        {student['student_number']}
 Student Name:     {student['first_name']} {student['last_name']}
@@ -191,7 +201,6 @@ Form:             {student['grade_level']}
 Year:             {report_data['academic_year']}
 
 Subject                Marks Grade Comment      Signature
-==============================================================================
 """
         
         # Subject grades in simple format
@@ -205,7 +214,7 @@ Subject                Marks Grade Comment      Signature
                     break
             
             if not subject_found:
-                report += f"{subject_name:<20} {'--':>3} {'--':>5} {'Not taken':<12} ____________\n"
+                report += f"{subject_name:<20} {'--':>3} {'--':>5} {'--':<12} --\n"
         
         # Simple grading system
         grading_str = self._build_grading_string(student['grade_level'], school_id=None)
@@ -232,15 +241,13 @@ HEAD TEACHERS' COMMENT: {head_teacher_comment}
 FORM TEACHER SIGN: ________________________
 HEAD TEACHER SIGN: ________________________
 
-==============================================================================
-NEXT TERM BEGINS ON: {settings.get('next_term_begins', 'To be announced')}
-FEES - BOARDING FEE: {settings.get('boarding_fee', 'MK 150,000')}
-UNIFORM - GIRLS: {settings.get('girls_uniform', 'White blouse, black skirt, black shoes')}
-UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, black shoes')}
-==============================================================================
+NEXT TERM BEGINS ON: {settings.get('next_term_begins') or 'To be announced'}
+FEES - BOARDING FEE: {settings.get('boarding_fee') or ''}
+UNIFORM - GIRLS: {settings.get('girls_uniform') or ''}
+UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
 
-                        Generated by: RN_LAB_TECH
-                     Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}
+
+                        Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}
 """
         
         return report
@@ -263,8 +270,8 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
             
             for student in students:
                 try:
-                    report_data = self.db.generate_termly_report_card(
-                        student['student_id'], term, academic_year
+                    report_data = self.generate_termly_report_card(
+                        student['student_id'], term, academic_year, school_id
                     )
                     
                     if report_data:
@@ -400,11 +407,10 @@ For High Performing Students:
         
         # Get school settings
         settings = self.db.get_school_settings(school_id)
-        school_name = settings.get('school_name') or 'DEMO SECONDARY SCHOOL'
+        school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
         
         # Authentic Malawi report card format
         report = f"""
-================================================================================
                             {school_name}
                           PRIVATE BAG 211
                              KAWALE
@@ -412,7 +418,6 @@ For High Performing Students:
                              MALAWI
 
                          PROGRESS REPORT
-================================================================================
 
 Serial No:        {student.get('student_number', 'N/A')}
 Student Name:     {student['first_name']} {student['last_name']}
@@ -420,9 +425,28 @@ Term:             {term.replace('Term', '').strip()}
 Form:             {form_level}
 Year:             {academic_year}
 Position:         {position_data.get('position', 'N/A')}/{position_data.get('total_students', 'N/A')}
-
+"""
+        
+        # Calculate overall grade for Forms 1-2 to include in text format
+        if form_level <= 2:
+            grades = [self.db.calculate_grade(d['mark'], form_level, school_id) for d in marks.values()]
+            grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+            for g in grades:
+                if g in grade_counts:
+                    grade_counts[g] += 1
+            max_count = max(grade_counts.values()) if grade_counts.values() else 0
+            most_common = [g for g, c in grade_counts.items() if c == max_count]
+            if len(most_common) == 1:
+                overall_grade = most_common[0]
+            else:
+                overall_grade = self.db.calculate_grade(int(average), form_level, school_id)
+            if overall_grade == 'F' and overall_status == 'PASS':
+                overall_grade = 'D'
+            
+            report += f"Average Grade:    {overall_grade}\n"
+        
+        report += f"""
 Subject                Marks Grade Pos  Comment      Signature
-==============================================================================
 """
         
         # Add subjects with positions
@@ -430,11 +454,11 @@ Subject                Marks Grade Pos  Comment      Signature
             if subject in marks:
                 mark = marks[subject]['mark']
                 grade = marks[subject]['grade']
-                pos = self.db.get_subject_position(student['student_id'], subject, term, academic_year, form_level) if hasattr(self.db, 'get_subject_position') else 'N/A'
-                comment = self.db.get_teacher_comment(grade) if hasattr(self.db, 'get_teacher_comment') else ('Good' if mark >= 50 else 'Fair')
+                pos = self.db.get_subject_position(student['student_id'], subject, term, academic_year, form_level, school_id) if hasattr(self.db, 'get_subject_position') else 'N/A'
+                comment = self.db.get_teacher_comment(grade, form_level, school_id) if hasattr(self.db, 'get_teacher_comment') else ('Good' if mark >= 50 else 'Fair')
                 report += f"{subject:<20} {mark:>3} {grade:>5} {pos:>3}  {comment:<12} ____________\n"
             else:
-                report += f"{subject:<20} {'--':>3} {'--':>5} {'--':>3}  {'Not taken':<12} ____________\n"
+                report += f"{subject:<20} {'--':>3} {'--':>5} {'--':>3}  {'--':<12} --\n"
         
         # Add aggregate for Forms 3&4
         if form_level >= 3:
@@ -448,7 +472,7 @@ Subject                Marks Grade Pos  Comment      Signature
                 aggregate = sum(grade_points)
             else:
                 aggregate = 54
-            report += f"\n================================================================================\nAggregate Points (Best Six): {aggregate}    Remark: {overall_status}\n"
+            report += f"\nAggregate Points (Best Six): {aggregate}    Remark: {overall_status}\n"
         
         # Grading system
         grading_str = self._build_grading_string(form_level, school_id)
@@ -459,10 +483,10 @@ Subject                Marks Grade Pos  Comment      Signature
         
         # Teacher comments
         if overall_status == 'PASS':
-            form_teacher_comment = f"Good performance! Passed {passed_subjects} subjects with {average:.1f}% average."
+            form_teacher_comment = f"Good performance! Passed {passed_subjects} subjects."
             head_teacher_comment = "Well done. Keep up the excellent work."
         else:
-            form_teacher_comment = f"Needs improvement. Focus on weak areas. Average: {average:.1f}%"
+            form_teacher_comment = f"Needs improvement. Focus on weak areas."
             head_teacher_comment = "Extra effort required. Seek help from teachers."
         
         report += f"""
@@ -472,15 +496,13 @@ HEAD TEACHERS' COMMENT: {head_teacher_comment}
 FORM TEACHER SIGN: ________________________
 HEAD TEACHER SIGN: ________________________
 
-==============================================================================
-NEXT TERM BEGINS ON: {settings.get('next_term_begins', 'To be announced')}
-FEES - BOARDING FEE: {settings.get('boarding_fee', 'MK 150,000')}
-UNIFORM - GIRLS: {settings.get('girls_uniform', 'White blouse, black skirt, black shoes')}
-UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, black shoes')}
-==============================================================================
+NEXT TERM BEGINS ON: {settings.get('next_term_begins') or 'To be announced'}
+FEES - BOARDING FEE: {settings.get('boarding_fee') or ''}
+UNIFORM - GIRLS: {settings.get('girls_uniform') or ''}
+UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
 
-                        Generated by: RN_LAB_TECH
-                     Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}
+
+                        Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}
 """
         
         return report
@@ -600,22 +622,29 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
         """Export professional progress report as PDF and return as bytes"""
         try:
             print(f"DEBUG: Starting PDF generation for student {student_id}")
-            pdf_filename = self.export_progress_report(student_id, term, academic_year, school_id)
-            print(f"DEBUG: PDF filename generated: {pdf_filename}")
-            
-            if pdf_filename and os.path.exists(pdf_filename):
-                print(f"DEBUG: PDF file exists, reading {pdf_filename}")
-                with open(pdf_filename, 'rb') as f:
-                    pdf_bytes = f.read()
-                print(f"DEBUG: Read {len(pdf_bytes)} bytes from PDF")
-                try:
-                    os.remove(pdf_filename)  # Clean up temporary file
-                except OSError as cleanup_error:
-                    print(f"DEBUG: Could not clean up {pdf_filename}: {cleanup_error}")
-                return pdf_bytes
-            else:
-                print(f"DEBUG: PDF file not found or not generated: {pdf_filename}")
+            buf = self.export_progress_report(student_id, term, academic_year, school_id)
+            if buf is None:
+                print(f"DEBUG: PDF generation returned None for student {student_id}")
                 return b''
+            # Support both BytesIO (new) and legacy file path (str)
+            if isinstance(buf, (bytes, bytearray)):
+                return bytes(buf)
+            if hasattr(buf, 'read'):
+                buf.seek(0)
+                data = buf.read()
+                print(f"DEBUG: Read {len(data)} bytes from PDF buffer")
+                return data
+            # Legacy: file path string
+            if isinstance(buf, str) and os.path.exists(buf):
+                with open(buf, 'rb') as f:
+                    data = f.read()
+                try:
+                    os.remove(buf)
+                except OSError:
+                    pass
+                return data
+            print(f"DEBUG: Unexpected return type from export_progress_report: {type(buf)}")
+            return b''
         except Exception as e:
             print(f"Error generating PDF bytes: {e}")
             import traceback
@@ -623,141 +652,325 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
             return b''
     
     def export_progress_report(self, student_id: int, term: str, academic_year: str = '2024-2025', school_id: int = None):
-        """Export progress report to PDF file"""
+        """Export progress report to PDF, returned as a BytesIO buffer."""
         if not HAS_REPORTLAB:
             print("ERROR: ReportLab library not found. PDF generation aborted.")
             return None
-            
-        student = self.db.get_student_by_id(student_id)
+
+        # Check if student exists and belongs to school
+        student = self.db.get_student_by_id(student_id, school_id)
         if not student:
+            print(f"DEBUG [Generator]: Student {student_id} not found or unauthorized for school {school_id}")
             return None
-        
-        # Use student's school_id if not provided
+
         if not school_id:
             school_id = student.get('school_id')
-            
-        import uuid
+
         student_name = f"{student['first_name']}_{student['last_name']}"
         print(f"DEBUG [Generator]: Preparing report for {student_name} (ID: {student_id})")
-        
-        filename = f"{student_name}_{term}_Progress_Report_{academic_year.replace('-', '_')}_{uuid.uuid4().hex[:8]}.pdf"
-        
-        # Check if marks exist
+
         marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
         if not marks:
             print(f"DEBUG [Generator]: No marks found for {student_name}")
             return None
 
         try:
-            doc = BorderedDocTemplate(filename, pagesize=A4, topMargin=0.8*inch, bottomMargin=0.8*inch, leftMargin=0.8*inch, rightMargin=0.8*inch)
-            
-            # Create frame and page template with border
-            frame = Frame(0.8*inch, 0.8*inch, A4[0]-1.6*inch, A4[1]-1.6*inch, leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0)
+            # --- Pull ALL settings from DB for this school ---
+            settings = self.db.get_school_settings(school_id)
+            school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
+            school_address = settings.get('school_address') or self.school_address or ''
+            school_phone = settings.get('school_phone') or self.school_phone or ''
+            school_email = settings.get('school_email') or self.school_email or ''
+            boarding_fee = settings.get('boarding_fee') or self.boarding_fee or ''
+            next_term_begins = settings.get('next_term_begins') or 'To be announced'
+            boys_uniform = settings.get('boys_uniform') or self.boys_uniform or ''
+            girls_uniform = settings.get('girls_uniform') or self.girls_uniform or ''
+
+            form_level = student.get('grade_level', 1)
+
+            # Pull subject teachers for this form and school
+            teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
+
+            # Write PDF into memory buffer
+            buffer = io.BytesIO()
+            doc = BorderedDocTemplate(
+                buffer, pagesize=A4,
+                topMargin=0.8*inch, bottomMargin=0.4*inch,
+                leftMargin=0.6*inch, rightMargin=0.6*inch
+            )
+            frame = Frame(
+                0.6*inch, 0.4*inch,
+                A4[0]-1.2*inch, A4[1]-1.2*inch,
+                leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0
+            )
             template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
             doc.addPageTemplates([template])
-            
+
             styles = getSampleStyleSheet()
             story = []
-            
-            # Get school settings
-            settings = self.db.get_school_settings(school_id)
-            school_name = settings.get('school_name') or 'DEMO SECONDARY SCHOOL'
-            form_level = student.get('grade_level', 1)
-            
-            # 1. School Header
-            # Add logo if exists
-            logo_path = "Malawi Government logo.png"
+
+            # --- 1. Logo ---
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Malawi Government logo.png')
             if os.path.exists(logo_path):
                 try:
                     logo = Image(logo_path, width=0.8*inch, height=0.8*inch)
                     story.append(logo)
-                    story.append(Spacer(1, 6))
-                except:
+                    story.append(Spacer(1, 4))
+                except Exception:
                     pass
-            
+
             school_name_style = ParagraphStyle('SchoolName', parent=styles['Heading1'], fontSize=16, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
             address_style = ParagraphStyle('Address', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
             progress_style = ParagraphStyle('Progress', parent=styles['Heading1'], fontSize=14, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-            normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=colors.black)
-            
+            normal_style = ParagraphStyle('NormalCustom', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=colors.black)
+            footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER)
+
             spacing = 2 if form_level >= 3 else 4
+
+            # --- 2. School Header ---
             story.append(Paragraph(f"<b>{school_name}</b>", school_name_style))
-            story.append(Spacer(1, spacing))
+            story.append(Spacer(1, 2))
+            for line in school_address.split(','):
+                line = line.strip()
+                if line:
+                    story.append(Paragraph(f"<b>{line}</b>", address_style))
+            # Email deliberately omitted to conserve space as per user request
+            # if school_email:
+            #     story.append(Paragraph(f"<b>Email: {school_email}</b>", address_style))
+            story.append(Spacer(1, 2))
+            story.append(Paragraph("<b>PROGRESS REPORT</b>", progress_style))
+            story.append(Spacer(1, 2))
+
+            # --- 3. Student Info ---
+            # Calculate position and average FIRST (before table)
+            position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
+            avg = sum(d['mark'] for d in marks.values()) / len(marks) if marks else 0
+            passed_subjects = sum(1 for d in marks.values() if d['mark'] >= (40 if form_level >= 3 else 50))
+            english_mark = marks.get('English', {}).get('mark', 0)
+            overall_status = 'PASS' if passed_subjects >= 6 and english_mark >= (40 if form_level >= 3 else 50) else 'FAIL'
             
-            school_address = settings.get('school_address') or 'P.O. Box [NUMBER], [CITY], Malawi'
-            for line in school_address.split(', '):
-                story.append(Paragraph(f"<b>{line.strip()}</b>", address_style))
-            story.append(Spacer(1, spacing))
+            # Calculate overall grade for Forms 1-2
+            if form_level <= 2:
+                if overall_status == 'FAIL':
+                    overall_grade = 'F'
+                else:
+                    grades = [self.db.calculate_grade(d['mark'], form_level, school_id) for d in marks.values()]
+                    grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+                    for g in grades:
+                        if g in grade_counts:
+                            grade_counts[g] += 1
+                    max_count = max(grade_counts.values()) if grade_counts.values() else 0
+                    most_common = [g for g, c in grade_counts.items() if c == max_count]
+                    if len(most_common) == 1:
+                        overall_grade = most_common[0]
+                    else:
+                        overall_grade = self.db.calculate_grade(int(avg), form_level, school_id)
+                    if overall_grade == 'F' and overall_status == 'PASS':
+                        overall_grade = 'D'
+            else:
+                overall_grade = None  # Forms 3-4 use aggregate points
+
+            # Prepare student info data for a 4-column layout to allow side-by-side Remarks and Grade/Points
+            status_text = "Passed" if overall_status == 'PASS' else "Failed"
             
-            story.append(Paragraph(f"<b>PROGRESS REPORT</b>", progress_style))
-            story.append(Spacer(1, spacing))
-            
-            # 2. Student Info Table
+            if form_level <= 2:
+                final_row = ['Remarks:', status_text, 'Average Grade:', overall_grade]
+            else:
+                final_row = ['Remarks:', status_text, 'Aggregate Points:', str(position_data.get('aggregate_points', '--'))]
+
             student_data = [
-                ['Serial No:', student.get('student_number', 'N/A')],
-                ['Student Name:', f"{student['first_name']} {student['last_name']}"],
-                ['Term:', term.replace('Term', '').strip()],
-                ['Form:', str(form_level)],
-                ['Year:', academic_year]
+                ['Serial No:', student.get('student_number', 'N/A'), '', ''],
+                ['Student Name:', f"{student['first_name']} {student['last_name']}", '', ''],
+                ['Term:', term.replace('Term', '').strip(), '', ''],
+                ['Form:', str(form_level), '', ''],
+                ['Year:', academic_year, '', ''],
+                ['Position:', f"{position_data.get('position', '--')}/{position_data.get('total_students', '--')}", '', ''],
+                final_row
             ]
-            student_table = Table(student_data, colWidths=[1.5*inch, 4*inch])
-            student_table.setStyle(TableStyle([
+
+            # Adjust colWidths for 4-column layout
+            student_table = Table(student_data, colWidths=[1.1*inch, 1.2*inch, 1.5*inch, 1.7*inch])
+            
+            table_style = [
                 ('ALIGN', (0,0), (-1,-1), 'LEFT'),
                 ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
                 ('FONTSIZE', (0,0), (-1,-1), 10),
                 ('LEFTPADDING', (0,0), (-1,-1), 0),
                 ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-            ]))
+            ]
+            
+            # Span the first 6 rows across columns 1-3
+            for i in range(6):
+                table_style.append(('SPAN', (1, i), (3, i)))
+            
+            student_table.setStyle(TableStyle(table_style))
             story.append(student_table)
-            story.append(Spacer(1, 10))
-            
-            # 3. Marks Table
-            table_data = [['Subject', 'Marks', 'Grade', 'Position', 'Teachers Comment', 'Signature']]
-            
-            def get_simple_comment(g):
-                return {'A': 'Excellent', 'B': 'Very Good', 'C': 'Good', 'D': 'Fair', 'F': 'Poor'}.get(g, 'N/A')
+            story.append(Spacer(1, 4))
 
+            table_data = [['Subject', 'Marks', 'Grade', 'Position', "Teacher's Comment", 'Signature']]
             for subject in self.standard_subjects:
                 if subject in marks:
                     m = marks[subject]['mark']
                     g = self.db.calculate_grade(m, form_level, school_id)
-                    table_data.append([subject, str(m), g, '--', get_simple_comment(g), '--'])
+                    pos = self.db.get_subject_position(student_id, subject, term, academic_year, form_level, school_id)
+                    # Use dynamic teacher comment from database/settings
+                    comment = self.db.get_teacher_comment(g, form_level, school_id)
+                    teacher = teachers_map.get(subject, '')
+                    teacher_text = str(teacher).strip() if teacher is not None else ''
+                    # Treat UI placeholder labels like "Business Studies Teacher F3" as unassigned.
+                    is_placeholder_teacher = bool(re.match(r'^.+\s+Teacher\s+F[1-4]$', teacher_text, flags=re.IGNORECASE))
+                    # Signature rule:
+                    # - Subject has marks + real teacher assigned => teacher name
+                    # - Subject has marks + no real teacher assigned => blank line
+                    signature = teacher_text if (teacher_text and not is_placeholder_teacher) else '_______________'
+                    table_data.append([subject, str(m), g, pos, comment, signature])
                 else:
-                    table_data.append([subject, '--', '--', '--', 'Not taken', '--'])
-            
-            marks_table = Table(table_data, colWidths=[1.8*inch, 0.7*inch, 0.7*inch, 0.7*inch, 1.5*inch, 1.2*inch])
+                    # Subject not taken/no marks for this period.
+                    table_data.append([subject, '--', '--', '--', '--', '---'])
+
+            # Expanded table widths to fill 7.0 inches (between 0.6" margins)
+            # Subject(1.8), Marks(0.7), Grade(0.7), Pos(0.8), Comment(1.5), signature(1.5) = 7.0"
+            marks_table = Table(table_data, colWidths=[1.8*inch, 0.7*inch, 0.7*inch, 0.8*inch, 1.5*inch, 1.5*inch], hAlign='LEFT')
             marks_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('ALIGN', (0, 1), (0, -1), 'LEFT'),
+                ('ALIGN', (4, 1), (4, -1), 'LEFT'),
+                ('ALIGN', (5, 1), (5, -1), 'LEFT'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightyellow]),
             ]))
             story.append(marks_table)
-            story.append(Spacer(1, 10))
+            story.append(Spacer(1, 4))
+
+            # Calculate dynamic sizing for lower section based on subject count
+            num_subjects = len(self.standard_subjects)
+            if num_subjects >= 14:
+                b_space = 0
+                f_size = 10
+                f_leading = 12
+            elif num_subjects >= 12:
+                b_space = 1
+                f_size = 11
+                f_leading = 13
+            else:
+                b_space = 2
+                f_size = 11
+                f_leading = 13
+                
+            dynamic_style = ParagraphStyle('DynamicNormal', parent=styles['Normal'], fontSize=f_size, leading=f_leading, fontName='Helvetica', textColor=colors.black)
+
+            # --- 5. Grading Key (BELOW TABLE) ---
+            grading_str = self._build_grading_string(form_level, school_id)
+            if form_level <= 2:
+                story.append(Paragraph(f"<b>GRADING:</b> {grading_str}", dynamic_style))
+            else:
+                story.append(Paragraph(f"<b>MSCE GRADING:</b> {grading_str}", dynamic_style))
+            story.append(Spacer(1, b_space))
+
+            # --- 6. Teacher Comments & Signatures ---
+            # Automatically generated based on pass/fail logic and form level
+            if form_level <= 2:
+                # Junior Forms (1&2)
+                if overall_status == 'PASS':
+                    form_comment = f"Has passed: Good performance! Passed with Average Grade ({overall_grade})"
+                    head_comment = "Well done. Keep up the good work."
+                else:
+                    form_comment = "Failed: Results are below Average. More effort needed in all subjects."
+                    head_comment = "Work hard next term to improve these grades."
+            else:
+                # Senior Forms (3&4)
+                points = position_data.get('aggregate_points', '--')
+                if overall_status == 'PASS':
+                    form_comment = f"Has passed: Good performance! Passed with Aggregate points ({points})"
+                    head_comment = "Well done. Keep up the good work."
+                else:
+                    form_comment = f"Failed: Aggregate points ({points}). More effort needed in all subjects."
+                    head_comment = "Work hard next term to improve these grades."
+
+            story.append(Paragraph(f"<b>FORM TEACHERS' COMMENT:</b> {form_comment}", dynamic_style))
+            story.append(Spacer(1, b_space))
             
-            # 4. Overall Position
-            position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
-            summary_txt = f"Position: {position_data.get('position', '--')}/{position_data.get('total_students', '--')}"
-            if form_level >= 3:
-                summary_txt += f"    Aggregate Points: {position_data.get('aggregate_points', '--')}"
+            # Form Teacher's Signature (Label and Image on same line)
+            ft_sig_field = f"form_{form_level}_teacher_signature"
+            ft_sig_path = settings.get(ft_sig_field)
             
-            story.append(Paragraph(f"<b>{summary_txt}</b>", normal_style))
-            story.append(Spacer(1, 15))
+            ft_sig_content = Paragraph(f"________________________", dynamic_style)
+            if ft_sig_path and os.path.exists(ft_sig_path):
+                try:
+                    img = Image(ft_sig_path)
+                    aspect = img.imageHeight / img.imageWidth
+                    img.drawWidth = 1.0 * inch
+                    img.drawHeight = (1.0 * aspect) * inch
+                    ft_sig_content = img
+                except Exception as e:
+                    logger.error(f"Error loading form teacher signature: {e}")
             
-            # 5. Signatures
-            story.append(Paragraph(f"<b>FORM TEACHER SIGN:</b> ________________________", normal_style))
-            story.append(Spacer(1, 8))
-            story.append(Paragraph(f"<b>HEAD TEACHER SIGN:</b> ________________________", normal_style))
+            ft_sig_table = Table([
+                [Paragraph(f"<b>Form Teacher's Signature:</b>", dynamic_style), ft_sig_content]
+            ], colWidths=[2.2*inch, 4*inch])
+            ft_sig_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+            ]))
+            story.append(ft_sig_table)
             
-            # 6. Footer
-            story.append(Spacer(1, 20))
-            footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER)
+            story.append(Spacer(1, b_space))
+            
+            story.append(Paragraph(f"<b>HEAD TEACHERS' COMMENT:</b> {head_comment}", dynamic_style))
+            story.append(Spacer(1, b_space))
+            
+            # Head Teacher's Signature (Label and Image on same line)
+            ht_sig_path = settings.get('head_teacher_signature')
+            ht_sig_content = Paragraph(f"________________________", dynamic_style)
+            if ht_sig_path and os.path.exists(ht_sig_path):
+                try:
+                    img = Image(ht_sig_path)
+                    aspect = img.imageHeight / img.imageWidth
+                    img.drawWidth = 1.0 * inch
+                    img.drawHeight = (1.0 * aspect) * inch
+                    ht_sig_content = img
+                except Exception as e:
+                    logger.error(f"Error loading head teacher signature: {e}")
+            
+            ht_sig_table = Table([
+                [Paragraph(f"<b>Head Teacher's Signature:</b>", dynamic_style), ht_sig_content]
+            ], colWidths=[2.2*inch, 4*inch])
+            ht_sig_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+            ]))
+            story.append(ht_sig_table)
+            
+            story.append(Spacer(1, b_space))
+
+            # --- 7. Footer Info (from Settings) ---
+            next_term_text = next_term_begins if next_term_begins else '[DATE NOT SET]'
+            story.append(Paragraph(f"<b>NEXT TERM BEGINS ON:</b> {next_term_text}", dynamic_style))
+            story.append(Spacer(1, b_space))
+            
+            boarding_text = boarding_fee if boarding_fee else 'MK [AMOUNT]'
+            story.append(Paragraph(f"<b>FEES - BOARDING FEE:</b> {boarding_text}", dynamic_style))
+            story.append(Spacer(1, b_space))
+            
+            girls_text = girls_uniform if girls_uniform else '[UNIFORM NOT SPECIFIED]'
+            story.append(Paragraph(f"<b>UNIFORM - GIRLS:</b> {girls_text}", dynamic_style))
+            story.append(Spacer(1, b_space))
+            
+            boys_text = boys_uniform if boys_uniform else '[UNIFORM NOT SPECIFIED]'
+            story.append(Paragraph(f"<b>UNIFORM - BOYS:</b> {boys_text}", dynamic_style))
+            story.append(Spacer(1, b_space))
+            
             story.append(Paragraph(f"Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
-            
+
             doc.build(story)
-            return filename
-            
+            buffer.seek(0)
+            return buffer
+
         except Exception as e:
             print(f"CRITICAL Error creating PDF: {e}")
             import traceback
@@ -765,14 +978,14 @@ UNIFORM - BOYS: {settings.get('boys_uniform', 'White shirt, black trousers, blac
             return None
     
     def export_report_to_file(self, student_id: int, term: str, academic_year: str = '2024-2025', 
-                             filename: str = None):
+                             filename: str = None, school_id: int = None):
         """Export report card to text file"""
         if not filename:
-            student = self.db.get_student_by_id(student_id)
+            student = self.db.get_student_by_id(student_id, school_id)
             student_name = f"{student['first_name']}_{student['last_name']}" if student else f"student_{student_id}"
             filename = f"{student_name}_{term}_report_{academic_year.replace('-', '_')}.txt"
         
-        report_card = self.generate_termly_report_card(student_id, term, academic_year)
+        report_card = self.generate_termly_report_card(student_id, term, academic_year, school_id)
         
         if report_card:
             try:
