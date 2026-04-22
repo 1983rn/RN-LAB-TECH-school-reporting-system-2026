@@ -21,7 +21,7 @@ class PerformanceAnalyzer:
         # Department classifications
         self.departments = {
             'Sciences': {
-                'subjects': ['Agriculture', 'Biology', 'Chemistry', 'Physics', 'Mathematics', 'Computer Studies'],
+                'subjects': ['Agriculture', 'Biology', 'Chemistry', 'Computer Studies', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics', 'Clothing & Textiles', 'Technical Drawing'],
                 'description': 'Science and Mathematics Department'
             },
             'Humanities': {
@@ -40,14 +40,15 @@ class PerformanceAnalyzer:
             'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics'
         ]
     
-    def get_top_performers(self, category: str, form_level: int, term: str, academic_year: str = '2024-2025') -> List[Dict]:
+    def get_top_performers(self, category: str, form_level: int, term: str, academic_year: str = '2024-2025', school_id: int = None) -> List[Dict]:
         """Get top performers by category"""
-        return self.db.get_top_performers(category, form_level, term, academic_year)
+        return self.db.get_top_performers(category, form_level, term, academic_year, school_id)
     
-    def get_best_performing_students_by_class(self, form_level: int, term: str, academic_year: str = '2024-2025', top_n: int = 10) -> Dict:
+    def get_best_performing_students_by_class(self, form_level: int, term: str, academic_year: str = '2024-2025', top_n: int = 10, school_id: int = None) -> Dict:
         """Generate best performing students report for a specific class"""
         try:
-            rankings = self.db.get_student_rankings(form_level, term, academic_year)
+            rankings_data = self.db.get_student_rankings(form_level, term, academic_year, school_id)
+            rankings = rankings_data.get('rankings', []) if isinstance(rankings_data, dict) else rankings_data
             if not rankings:
                 return None
                 
@@ -66,7 +67,7 @@ class PerformanceAnalyzer:
             print(f"Error generating class performance report: {e}")
             return None
     
-    def get_best_performing_students_by_subject(self, subject_name: str, term: str, academic_year: str = '2024-2025', top_n: int = 10) -> Dict:
+    def get_best_performing_students_by_subject(self, subject_name: str, term: str, academic_year: str = '2024-2025', top_n: int = 10, school_id: int = None) -> Dict:
         """Generate best performing students report for a specific subject across all forms"""
         try:
             with self.db.get_connection() as conn:
@@ -84,13 +85,15 @@ class PerformanceAnalyzer:
                     WHERE sm.subject = ?
                     AND sm.term = ?
                     AND sm.academic_year = ?
+                    AND sm.school_id = ?
+                    AND s.school_id = ?
                     AND s.status = 'Active'
                     ORDER BY sm.mark DESC
                     LIMIT ?
                 """
                 
                 import pandas as pd
-                df = pd.read_sql_query(query, conn, params=(subject_name, term, academic_year, top_n))
+                df = pd.read_sql_query(query, conn, params=(subject_name, term, academic_year, school_id, school_id, top_n))
                 
                 return {
                     'report_type': f'Best Performing Students - {subject_name}',
@@ -105,7 +108,7 @@ class PerformanceAnalyzer:
             print(f"Error generating subject performance report: {e}")
             return None
     
-    def get_best_performing_students_by_department(self, department_name: str, term: str, academic_year: str = '2024-2025', top_n: int = 10) -> Dict:
+    def get_best_performing_students_by_department(self, department_name: str, term: str, academic_year: str = '2024-2025', top_n: int = 10, school_id: int = None) -> Dict:
         """Generate best performing students report for a specific department"""
         try:
             if department_name not in self.departments:
@@ -132,6 +135,8 @@ class PerformanceAnalyzer:
                     WHERE sm.subject IN ({subjects_placeholder})
                     AND sm.term = ?
                     AND sm.academic_year = ?
+                    AND sm.school_id = ?
+                    AND s.school_id = ?
                     AND s.status = 'Active'
                     GROUP BY s.student_id
                     HAVING subjects_taken_in_dept >= 2
@@ -140,7 +145,7 @@ class PerformanceAnalyzer:
                 """
                 
                 import pandas as pd
-                params = department_subjects + [term, academic_year, top_n]
+                params = department_subjects + [term, academic_year, school_id, school_id, top_n]
                 df = pd.read_sql_query(query, conn, params=params)
                 
                 return {
@@ -157,7 +162,7 @@ class PerformanceAnalyzer:
             print(f"Error generating department performance report: {e}")
             return None
     
-    def generate_comprehensive_performance_report(self, term: str, academic_year: str = '2024-2025') -> Dict:
+    def generate_comprehensive_performance_report(self, term: str, academic_year: str = '2024-2025', school_id: int = None) -> Dict:
         """Generate a comprehensive performance report covering all categories"""
         try:
             comprehensive_report = {
@@ -172,21 +177,21 @@ class PerformanceAnalyzer:
             # Best performers by class (Forms 1-4)
             comprehensive_report['performance_data']['by_class'] = {}
             for form_level in [1, 2, 3, 4]:
-                class_report = self.get_best_performing_students_by_class(form_level, term, academic_year, 5)
+                class_report = self.get_best_performing_students_by_class(form_level, term, academic_year, 5, school_id)
                 if class_report:
                     comprehensive_report['performance_data']['by_class'][f'Form_{form_level}'] = class_report
             
             # Best performers by subject
             comprehensive_report['performance_data']['by_subject'] = {}
             for subject in self.all_subjects:
-                subject_report = self.get_best_performing_students_by_subject(subject, term, academic_year, 5)
+                subject_report = self.get_best_performing_students_by_subject(subject, term, academic_year, 5, school_id)
                 if subject_report:
                     comprehensive_report['performance_data']['by_subject'][subject] = subject_report
             
             # Best performers by department
             comprehensive_report['performance_data']['by_department'] = {}
             for department in self.departments.keys():
-                dept_report = self.get_best_performing_students_by_department(department, term, academic_year, 5)
+                dept_report = self.get_best_performing_students_by_department(department, term, academic_year, 5, school_id)
                 if dept_report:
                     comprehensive_report['performance_data']['by_department'][department] = dept_report
             
@@ -510,6 +515,11 @@ Created by: RN_LAB_TECH
         
         title = category_titles.get(category, f'Best in {category.title()}')
         
+        # Get school name from settings
+        school_id = kwargs.get('school_id')
+        school_settings = self.db.get_school_settings(school_id)
+        school_name = school_settings.get('school_name') or self.school_name or 'SECONDARY SCHOOL'
+        
         report = f"""
 {'='*90}
                             REPUBLIC OF MALAWI
@@ -568,7 +578,7 @@ Category Details:
 """
         
         if category == 'sciences':
-            report += "- Agriculture, Biology, Chemistry, Computer Studies, Mathematics, Physics\n"
+            report += "- Agriculture, Biology, Chemistry, Computer Studies, Mathematics, Physics, Business Studies, Home Economics, Clothing & Textiles, Technical Drawing\n"
         elif category == 'humanities':
             report += "- Bible Knowledge, Geography, History, Life Skills/SOS\n"
         elif category == 'languages':
@@ -602,8 +612,9 @@ Created by: RN_LAB_TECH
         rankings = kwargs.get('rankings', [])
         
         # Get school name from settings
-        school_settings = self.db.get_school_settings()
-        school_name = school_settings.get('school_name') or 'SECONDARY SCHOOL'
+        school_id = kwargs.get('school_id')
+        school_settings = self.db.get_school_settings(school_id)
+        school_name = school_settings.get('school_name') or self.school_name or 'SECONDARY SCHOOL'
         
         report = f"""
 {'='*90}

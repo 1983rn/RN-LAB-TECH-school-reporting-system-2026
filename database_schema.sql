@@ -225,7 +225,15 @@ INSERT INTO subjects (subject_code, subject_name, description, grade_level, cred
 ('HIST4', 'History', 'History for Form 4', 4, 1.0),
 ('LIFE4', 'Life Skills/SOS', 'Life Skills/Social Studies for Form 4', 4, 1.0),
 ('MATH4', 'Mathematics', 'Mathematics for Form 4', 4, 1.0),
-('PHYS4', 'Physics', 'Physics for Form 4', 4, 1.0);
+('PHYS4', 'Physics', 'Physics for Form 4', 4, 1.0),
+('CT1', 'Clothing & Textiles', 'Clothing & Textiles for Form 1', 1, 1.0),
+('CT2', 'Clothing & Textiles', 'Clothing & Textiles for Form 2', 2, 1.0),
+('CT3', 'Clothing & Textiles', 'Clothing & Textiles for Form 3', 3, 1.0),
+('CT4', 'Clothing & Textiles', 'Clothing & Textiles for Form 4', 4, 1.0),
+('TD1', 'Technical Drawing', 'Technical Drawing for Form 1', 1, 1.0),
+('TD2', 'Technical Drawing', 'Technical Drawing for Form 2', 2, 1.0),
+('TD3', 'Technical Drawing', 'Technical Drawing for Form 3', 3, 1.0),
+('TD4', 'Technical Drawing', 'Technical Drawing for Form 4', 4, 1.0);
 
 -- Insert academic terms for the year
 INSERT INTO academic_periods (academic_year, period_name, start_date, end_date, is_current) VALUES

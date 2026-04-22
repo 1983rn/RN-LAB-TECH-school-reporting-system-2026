@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block title %}Grading System - Malawi School Reporting System{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-graduation-cap me-2"></i>Grading System Configuration</h2>
+        <p class="text-muted">Configure grading boundaries for Junior Forms (1 & 2) and Senior Forms (3 & 4).</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-edit me-2"></i>Edit Boundaries</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-4">Grade symbols are fixed (A-F for Junior, 1-9 for Senior). Only the percentage boundaries are editable. Ensure that boundaries for adjacent grades do not overlap.</p>
+                
+                <ul class="nav nav-tabs" id="gradingTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="junior-grading-tab" data-bs-toggle="tab" data-bs-target="#junior-grading-pane" type="button" role="tab">
+                            <i class="fas fa-child me-1"></i>Junior Forms (1 & 2)
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="senior-grading-tab" data-bs-toggle="tab" data-bs-target="#senior-grading-pane" type="button" role="tab">
+                            <i class="fas fa-user-graduate me-1"></i>Senior Forms (3 & 4)
+                        </button>
+                    </li>
+                </ul>
+                
+                <div class="tab-content mt-3" id="gradingTabsContent">
+                    <!-- Junior Forms Grading -->
+                    <div class="tab-pane fade show active" id="junior-grading-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-hover table-bordered" id="juniorGradingTable">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:15%">Grade</th>
+                                        <th style="width:25%">Min %</th>
+                                        <th style="width:25%">Max %</th>
+                                        <th style="width:35%">Teacher's Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="juniorGradingBody">
+                                    <!-- Populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Senior Forms Grading -->
+                    <div class="tab-pane fade" id="senior-grading-pane" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-hover table-bordered" id="seniorGradingTable">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:15%">Grade</th>
+                                        <th style="width:25%">Min %</th>
+                                        <th style="width:25%">Max %</th>
+                                        <th style="width:35%">Teacher's Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="seniorGradingBody">
+                                    <!-- Populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-4">
+                    <button type="button" class="btn btn-primary px-5" onclick="saveGradingRules(this)">
+                        <i class="fas fa-save me-2"></i>Save Grading Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card mb-4">
+            <div class="card-header bg-info text-white">
+                <h6 class="mb-0"><i class="fas fa-info-circle me-1"></i>Guidelines</h6>
+            </div>
+            <div class="card-body small">
+                <ul class="ps-3 mb-0">
+                    <li class="mb-2"><strong>Forms 1 & 2</strong> use letter grades (A, B, C, D, F). 50% is the standard pass mark (Grade D).</li>
+                    <li class="mb-2"><strong>Forms 3 & 4</strong> use MSCE numerical points (1-9). Grade 1-8 are passes, Grade 9 is a fail.</li>
+                    <li><strong>Recalculation:</strong> Changing these rules will immediately affect all report cards generated from now on, including for marks already in the system.</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-1"></i>
+            <strong>Data Integrity:</strong> Ensure that the 'Minimum' percentage for a higher grade is always greater than the 'Minimum' for a lower grade.
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Grading rules from server
+let juniorGradingRules = {{ junior_grading_json|safe }};
+let seniorGradingRules = {{ senior_grading_json|safe }};
+
+document.addEventListener('DOMContentLoaded', function() {
+    populateGradingTable('juniorGradingBody', juniorGradingRules);
+    populateGradingTable('seniorGradingBody', seniorGradingRules);
+});
+
+function populateGradingTable(tbodyId, rules) {
+    const tbody = document.getElementById(tbodyId);
+    tbody.innerHTML = '';
+    rules.forEach((rule, idx) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="align-middle"><strong>${rule.grade}</strong></td>
+            <td>
+                <div class="input-group">
+                    <input type="number" class="form-control grading-min" data-index="${idx}" value="${rule.min}" min="0" max="100">
+                    <span class="input-group-text">%</span>
+                </div>
+            </td>
+            <td>
+                <div class="input-group">
+                    <input type="number" class="form-control grading-max" data-index="${idx}" value="${rule.max}" min="0" max="100">
+                    <span class="input-group-text">%</span>
+                </div>
+            </td>
+            <td>
+                <input type="text" class="form-control grading-comment" data-index="${idx}" value="${rule.comment || ''}" placeholder="Comment">
+            </td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function collectGradingRules(tbodyId, originalRules) {
+    const tbody = document.getElementById(tbodyId);
+    const rows = tbody.querySelectorAll('tr');
+    const collected = [];
+    rows.forEach((row, idx) => {
+        const minInput = row.querySelector('.grading-min');
+        const maxInput = row.querySelector('.grading-max');
+        const commentInput = row.querySelector('.grading-comment');
+        collected.push({
+            grade: originalRules[idx].grade,
+            min: parseInt(minInput.value) || 0,
+            max: parseInt(maxInput.value) || 100,
+            comment: commentInput.value || ''
+        });
+    });
+    return collected;
+}
+
+function saveGradingRules(button) {
+    const junior = collectGradingRules('juniorGradingBody', juniorGradingRules);
+    const senior = collectGradingRules('seniorGradingBody', seniorGradingRules);
+
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Saving...';
+    button.disabled = true;
+
+    fetch('/api/update-settings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            junior_grading_rules: junior,
+            senior_grading_rules: senior,
+            partial_update: true  // Tell server this is a partial update of just grading
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        button.disabled = false;
+        button.innerHTML = originalText;
+        
+        if (data.success) {
+            // Update local memory
+            juniorGradingRules = junior;
+            seniorGradingRules = senior;
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-success alert-dismissible fade show mt-3';
+            alertDiv.innerHTML = `
+                <i class="fas fa-check-circle me-2"></i>Grading rules updated successfully!
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            button.closest('.card-body').appendChild(alertDiv);
+            
+            setTimeout(() => { if (alertDiv.parentNode) alertDiv.remove(); }, 3000);
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        button.disabled = false;
+        button.innerHTML = originalText;
+        alert('Error saving grading rules: ' + error.message);
+    });
+}
+</script>
+{% endblock %}

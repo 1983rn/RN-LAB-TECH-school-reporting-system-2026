@@ -131,23 +131,52 @@
             </div>
         </div>
         
-        <div class="card mt-3">
-            <div class="card-header bg-success text-white">
-                <h5 class="mb-0">Academic Standards</h5>
+        <div class="card mt-4 border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-signature me-2"></i>Digital Signatures</h5>
             </div>
             <div class="card-body">
-                <ul class="list-unstyled">
-                    <li><strong>Pass Mark:</strong> 50%</li>
-                    <li><strong>Minimum Subjects:</strong> 6</li>
-                    <li><strong>Mandatory Subject:</strong> English</li>
-                    <li><strong>Total Subjects:</strong> 12</li>
-                    <li><strong>Form Levels:</strong> 1-4</li>
-                    <li><strong>Terms per Year:</strong> 3</li>
-                </ul>
+                <p class="small text-muted mb-3">Upload signature images to appear on report cards. Preferred size: 1-inch wide, transparent PNG.</p>
+                
+                {% set sig_types = [
+                    ('form_1', 'Form 1 Teacher'),
+                    ('form_2', 'Form 2 Teacher'),
+                    ('form_3', 'Form 3 Teacher'),
+                    ('form_4', 'Form 4 Teacher'),
+                    ('head_teacher', 'Head Teacher')
+                ] %}
+                
+                {% for stype_id, stype_label in sig_types %}
+                {% set field_name = stype_id ~ '_signature' if stype_id == 'head_teacher' else stype_id ~ '_teacher_signature' %}
+                {% set current_sig = (school_settings|default({})).get(field_name) %}
+                <div class="mb-4 {% if not loop.last %}pb-3 border-bottom{% endif %}">
+                    <label class="form-label d-flex justify-content-between small fw-bold">
+                        <span>{{ stype_label }}</span>
+                        {% if current_sig %}
+                        <span class="badge bg-success">Uploaded</span>
+                        {% else %}
+                        <span class="badge bg-light text-muted">Not Set</span>
+                        {% endif %}
+                    </label>
+                    <div id="preview_{{ stype_id }}" class="mb-2 {% if not current_sig %}d-none{% endif %}">
+                        <img src="/{{ current_sig }}" style="max-height: 40px; border: 1px dashed #ccc; padding: 2px; background: white;">
+                    </div>
+                    <div class="input-group input-group-sm">
+                        <input type="file" class="form-control" id="file_{{ stype_id }}" accept="image/*">
+                        <button class="btn btn-outline-primary" type="button" onclick="uploadSignature('{{ stype_id }}', this)" title="Upload">
+                            <i class="fas fa-upload"></i>
+                        </button>
+                        <button class="btn btn-outline-danger {% if not current_sig %}d-none{% endif %}" type="button" id="btn_delete_{{ stype_id }}" onclick="deleteSignature('{{ stype_id }}', this)" title="Remove">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
             </div>
         </div>
     </div>
 </div>
+
 
 <div class="row mt-4">
     <div class="col-12">
@@ -200,8 +229,8 @@
                                         <td>
                                             <input type="text" class="form-control form-control-sm" 
                                                    id="teacher_1_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
-                                                   value="{{ (subject_teachers|default({})).get(1, {}).get(subject, subject ~ ' Teacher F1') }}" 
-                                                   placeholder="Enter teacher name" disabled>
+                                                   value="{{ (subject_teachers|default({})).get(1, {}).get(subject, '') }}"
+                                                   placeholder="Enter Teacher name" disabled>
                                         </td>
                                         <td>
                                             <div class="btn-group" role="group">
@@ -234,8 +263,8 @@
                                         <td>
                                             <input type="text" class="form-control form-control-sm" 
                                                    id="teacher_2_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
-                                                   value="{{ (subject_teachers|default({})).get(2, {}).get(subject, subject ~ ' Teacher F2') }}" 
-                                                   placeholder="Enter teacher name" disabled>
+                                                   value="{{ (subject_teachers|default({})).get(2, {}).get(subject, '') }}"
+                                                   placeholder="Enter Teacher name" disabled>
                                         </td>
                                         <td>
                                             <div class="btn-group" role="group">
@@ -268,8 +297,8 @@
                                         <td>
                                             <input type="text" class="form-control form-control-sm" 
                                                    id="teacher_3_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
-                                                   value="{{ (subject_teachers|default({})).get(3, {}).get(subject, subject ~ ' Teacher F3') }}" 
-                                                   placeholder="Enter teacher name" disabled>
+                                                   value="{{ (subject_teachers|default({})).get(3, {}).get(subject, '') }}"
+                                                   placeholder="Enter Teacher name" disabled>
                                         </td>
                                         <td>
                                             <div class="btn-group" role="group">
@@ -302,8 +331,8 @@
                                         <td>
                                             <input type="text" class="form-control form-control-sm" 
                                                    id="teacher_4_{{ subject|replace(' ', '_')|replace('/', '_') }}" 
-                                                   value="{{ (subject_teachers|default({})).get(4, {}).get(subject, subject ~ ' Teacher F4') }}" 
-                                                   placeholder="Enter teacher name" disabled>
+                                                   value="{{ (subject_teachers|default({})).get(4, {}).get(subject, '') }}"
+                                                   placeholder="Enter Teacher name" disabled>
                                         </td>
                                         <td>
                                             <div class="btn-group" role="group">
@@ -347,6 +376,8 @@
                             <li>Computer Studies</li>
                             <li>Business Studies</li>
                             <li>Home Economics</li>
+                            <li>Clothing & Textiles</li>
+                            <li>Technical Drawing</li>
                         </ul>
                     </div>
                     <div class="col-md-4">
@@ -398,13 +429,13 @@
 
 {% block scripts %}
 <script>
-// Load subject teachers and periods data on page load
 document.addEventListener('DOMContentLoaded', function() {
     for (let formLevel = 1; formLevel <= 4; formLevel++) {
         loadSubjectTeachers(formLevel);
     }
     loadPeriodsWithData();
 });
+
 
 function loadSubjectTeachers(formLevel) {
     fetch(`/api/get-subject-teachers?form_level=${formLevel}`)
@@ -415,11 +446,11 @@ function loadSubjectTeachers(formLevel) {
             tbody.innerHTML = '';
             
             const subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
-                             'Chichewa', 'Computer Studies', 'English', 'Geography', 
-                             'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics'];
+                             'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+                             'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics'];
             
             subjects.forEach(subject => {
-                const teacherName = data.teachers[subject] || `${subject} Teacher F${formLevel}`;
+                const teacherName = data.teachers[subject] || '';
                 const row = document.createElement('tr');
                 const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
                 row.innerHTML = `
@@ -428,7 +459,7 @@ function loadSubjectTeachers(formLevel) {
                         <input type="text" class="form-control form-control-sm" 
                                id="${inputId}" 
                                value="${teacherName}" 
-                               placeholder="Enter teacher name" disabled>
+                               placeholder="Enter Teacher name" disabled>
                     </td>
                     <td>
                         <div class="btn-group" role="group">
@@ -600,11 +631,10 @@ function updateSettings(clickedButton) {
     const girlsUniform = document.getElementById('girlsUniform').value;
     const boysUniform = document.getElementById('boysUniform').value;
     
-    // For settings dropdowns we expect a single selected value; send arrays for compatibility with backend
+    // For settings dropdowns we expect a single selected value
     const selectedYear = document.getElementById('academicYearsSelect').value;
     const selectedTerm = document.getElementById('termsSelect').value;
-    const academicYears = selectedYear ? [selectedYear] : [];
-    const terms = selectedTerm ? [selectedTerm] : [];
+    
     if (!schoolName || !schoolAddress || !schoolPhone || !schoolEmail) {
         alert('Please fill in all fields');
         return;
@@ -635,8 +665,6 @@ function updateSettings(clickedButton) {
             boarding_fee: boardingFee,
             girls_uniform: girlsUniform,
             boys_uniform: boysUniform,
-            academic_years: academicYears,
-            terms: terms,
             selected_term: selectedTerm,
             selected_academic_year: selectedYear
         })
@@ -701,5 +729,118 @@ function updateSettings(clickedButton) {
         alert('Error updating settings: ' + error.message);
     });
 }
+
+function uploadSignature(type, buttonEl) {
+    const fileInput = document.getElementById(`file_${type}`);
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select a file to upload');
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append('signature', file);
+    formData.append('type', type);
+
+    const originalBtnContent = buttonEl.innerHTML;
+    buttonEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    buttonEl.disabled = true;
+
+    fetch('/api/upload-signature', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        buttonEl.innerHTML = originalBtnContent;
+        buttonEl.disabled = false;
+
+        if (data.success) {
+            // Update preview
+            const previewDiv = document.getElementById(`preview_${type}`);
+            const imgEl = previewDiv.querySelector('img');
+            imgEl.src = '/' + data.path + '?v=' + new Date().getTime(); // Anti-cache
+            previewDiv.classList.remove('d-none');
+            
+            // Clear input
+            fileInput.value = '';
+            
+            // Show success badge if not already there
+            const container = fileInput.closest('.mb-4');
+            const badge = container.querySelector('.badge');
+            if (badge) {
+                badge.textContent = 'Uploaded';
+                badge.className = 'badge bg-success';
+            }
+            
+            // Show delete button
+            const deleteBtn = document.getElementById(`btn_delete_${type}`);
+            if (deleteBtn) {
+                deleteBtn.classList.remove('d-none');
+            }
+            
+            alert('Signature uploaded successfully!');
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        buttonEl.innerHTML = originalBtnContent;
+        buttonEl.disabled = false;
+        console.error('Error uploading signature:', error);
+        alert('Failed to upload signature');
+    });
+}
+
+function deleteSignature(type, buttonEl) {
+    if (!confirm('Are you sure you want to remove this signature?')) {
+        return;
+    }
+
+    const originalBtnContent = buttonEl.innerHTML;
+    buttonEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    buttonEl.disabled = true;
+
+    fetch('/api/delete-signature', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ type: type })
+    })
+    .then(response => response.json())
+    .then(data => {
+        buttonEl.innerHTML = originalBtnContent;
+        buttonEl.disabled = false;
+
+        if (data.success) {
+            // Hide preview
+            const previewDiv = document.getElementById(`preview_${type}`);
+            previewDiv.classList.add('d-none');
+            
+            // Hide delete button
+            buttonEl.classList.add('d-none');
+            
+            // Update badge
+            const container = buttonEl.closest('.mb-4');
+            const badge = container.querySelector('.badge');
+            if (badge) {
+                badge.textContent = 'Not Set';
+                badge.className = 'badge bg-light text-muted';
+            }
+            
+            alert('Signature removed successfully!');
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        buttonEl.innerHTML = originalBtnContent;
+        buttonEl.disabled = false;
+        console.error('Error deleting signature:', error);
+        alert('Failed to delete signature');
+    });
+}
+
 </script>
 {% endblock %}

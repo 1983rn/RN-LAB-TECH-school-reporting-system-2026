@@ -3,14 +3,15 @@
 Test the API endpoint with authentication
 """
 
+import os
 from app import app
 
 
 def test_with_authentication():
     """Test the API with proper authentication using Flask test client"""
     login_data = {
-        "username": "MAKONOKAya",
-        "password": "NAMADEYIMKOLOWEKO1949",
+        "username": os.environ.get("DEVELOPER_USERNAME", "MAKONOKAya"),
+        "password": os.environ.get("DEVELOPER_PASSWORD", "NAMADEYIMKOLOWEKO1949"),
         "user_type": "developer"
     }
 

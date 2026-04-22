@@ -38,8 +38,8 @@ python start_app.py
 2. **Go to:** `http://localhost:5000`
 3. **Login with:**
    - **Developer Account:** 
-     - Username: `MAKONOKAya`
-     - Password: `NAMADEYIMKOLOWEKO1949`
+     - Username: `[ENVIRONMENT_VARIABLE]`
+     - Password: `[ENVIRONMENT_VARIABLE]`
 
 ## 📋 System Features
 
@@ -172,7 +172,7 @@ When the application starts successfully, you should see:
 🌐 Starting web server...
 📱 Open your browser and go to: http://localhost:5000
 🔑 Login credentials:
-   Developer: MAKONOKAya / NAMADEYIMKOLOWEKO1949
+   Developer: [REDACTED] / [REDACTED]
 ==================================================
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5000

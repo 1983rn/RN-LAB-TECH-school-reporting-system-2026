@@ -98,6 +98,12 @@
 
                 <li class="sidebar-menu-header">System</li>
                 <li class="sidebar-menu-item">
+                    <a href="{{ url_for('grading_config') }}" class="sidebar-link {% if request.endpoint == 'grading_config' %}active{% endif %}">
+                        <i class="fas fa-graduation-cap"></i>
+                        <span>Grading System</span>
+                    </a>
+                </li>
+                <li class="sidebar-menu-item">
                     <a href="{{ url_for('settings') }}" class="sidebar-link {% if request.endpoint == 'settings' %}active{% endif %}">
                         <i class="fas fa-cog"></i>
                         <span>Settings</span>

@@ -4,64 +4,33 @@ Multi-User Management System for Schools
 Allows multiple users from same school to work concurrently
 """
 
-import sqlite3
 import hashlib
 import secrets
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import logging
 
 class SchoolUserManager:
-    """Manages multiple users for the same school"""
+    """Manages multiple users for the same school using PostgreSQL"""
     
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, db):
+        """Initialize with SchoolDatabase instance"""
+        self.db = db
         self.logger = logging.getLogger(__name__)
     
     def create_school_users_table(self):
-        """Create users table if it doesn't exist"""
+        """
+        Create users table if it doesn't exist.
+        In Postgres mode, this is handled by SchoolDatabase.init_postgres_database().
+        This method is kept for API compatibility.
+        """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS school_users (
-                        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        school_id INTEGER NOT NULL,
-                        username TEXT NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        full_name TEXT NOT NULL,
-                        email TEXT,
-                        role TEXT DEFAULT 'teacher',
-                        assigned_forms TEXT DEFAULT '[]',
-                        is_active BOOLEAN DEFAULT 1,
-                        created_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        last_login TEXT,
-                        session_token TEXT,
-                        session_expires TEXT,
-                        FOREIGN KEY (school_id) REFERENCES schools (school_id),
-                        UNIQUE(username, school_id)
-                    )
-                """)
-                
-                # Create user activity log table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS user_activity_log (
-                        activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        activity_type TEXT NOT NULL,
-                        form_level INTEGER,
-                        details TEXT,
-                        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (user_id) REFERENCES school_users (user_id)
-                    )
-                """)
-                
-                conn.commit()
-                self.logger.info("School users tables created successfully")
-                return True
-                
+            # Tables are already created in SchoolDatabase.init_postgres_database()
+            self.logger.info("School users tables verification (handled by SchoolDatabase)")
+            return True
         except Exception as e:
-            self.logger.error(f"Error creating users tables: {e}")
+            self.logger.error(f"Error verifying users tables: {e}")
             return False
     
     def create_school_user(self, school_id: int, username: str, password: str, 
@@ -69,13 +38,13 @@ class SchoolUserManager:
                          assigned_forms: List[int] = None) -> bool:
         """Create a new user for a school"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Check if username already exists for this school
                 cursor.execute("""
                     SELECT COUNT(*) FROM school_users 
-                    WHERE username = ? AND school_id = ?
+                    WHERE username = %s AND school_id = %s
                 """, (username, school_id))
                 
                 if cursor.fetchone()[0] > 0:
@@ -85,12 +54,12 @@ class SchoolUserManager:
                 password_hash = self._hash_password(password)
                 
                 # Convert assigned forms to JSON string
-                forms_json = str(assigned_forms) if assigned_forms else '[]'
+                forms_json = json.dumps(assigned_forms) if assigned_forms else '[]'
                 
                 cursor.execute("""
                     INSERT INTO school_users 
                     (school_id, username, password_hash, full_name, email, role, assigned_forms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (school_id, username, password_hash, full_name, email, role, forms_json))
                 
                 conn.commit()
@@ -104,14 +73,14 @@ class SchoolUserManager:
     def authenticate_school_user(self, username: str, password: str, school_id: int) -> Optional[Dict]:
         """Authenticate a school user"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 cursor.execute("""
                     SELECT user_id, school_id, username, password_hash, full_name, 
                            email, role, assigned_forms, is_active
                     FROM school_users 
-                    WHERE username = ? AND school_id = ? AND is_active = 1
+                    WHERE username = %s AND school_id = %s AND is_active = 1
                 """, (username, school_id))
                 
                 user_data = cursor.fetchone()
@@ -127,7 +96,7 @@ class SchoolUserManager:
                 cursor.execute("""
                     UPDATE school_users 
                     SET last_login = CURRENT_TIMESTAMP 
-                    WHERE user_id = ?
+                    WHERE user_id = %s
                 """, (user_data[0],))
                 
                 conn.commit()
@@ -139,7 +108,7 @@ class SchoolUserManager:
                     'full_name': user_data[4],
                     'email': user_data[5],
                     'role': user_data[6],
-                    'assigned_forms': eval(user_data[7]),  # Convert JSON string back to list
+                    'assigned_forms': json.loads(user_data[7]),
                     'is_active': user_data[8]
                 }
                 
@@ -150,14 +119,14 @@ class SchoolUserManager:
     def get_school_users(self, school_id: int) -> List[Dict]:
         """Get all users for a school"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 cursor.execute("""
                     SELECT user_id, username, full_name, email, role, 
                            assigned_forms, is_active, created_date, last_login
                     FROM school_users 
-                    WHERE school_id = ?
+                    WHERE school_id = %s
                     ORDER BY created_date DESC
                 """, (school_id,))
                 
@@ -169,7 +138,7 @@ class SchoolUserManager:
                         'full_name': row[2],
                         'email': row[3],
                         'role': row[4],
-                        'assigned_forms': eval(row[5]),  # Convert JSON string back to list
+                        'assigned_forms': json.loads(row[5]),
                         'is_active': row[6],
                         'created_date': row[7],
                         'last_login': row[8]
@@ -184,14 +153,14 @@ class SchoolUserManager:
     def update_user_assignment(self, user_id: int, assigned_forms: List[int]) -> bool:
         """Update user's form assignments"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                forms_json = str(assigned_forms)
+                forms_json = json.dumps(assigned_forms)
                 cursor.execute("""
                     UPDATE school_users 
-                    SET assigned_forms = ?
-                    WHERE user_id = ?
+                    SET assigned_forms = %s
+                    WHERE user_id = %s
                 """, (forms_json, user_id))
                 
                 conn.commit()
@@ -206,13 +175,13 @@ class SchoolUserManager:
                        form_level: int = None, details: str = None) -> bool:
         """Log user activity for tracking and conflict prevention"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 cursor.execute("""
                     INSERT INTO user_activity_log 
                     (user_id, activity_type, form_level, details)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 """, (user_id, activity_type, form_level, details))
                 
                 conn.commit()
@@ -225,20 +194,20 @@ class SchoolUserManager:
     def get_active_users_on_form(self, form_level: int, minutes: int = 5) -> List[Dict]:
         """Get users currently active on a specific form"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Get recent activity for this form
-                cutoff_time = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+                cutoff_time = (datetime.now() - timedelta(minutes=minutes))
                 
                 cursor.execute("""
                     SELECT DISTINCT u.user_id, u.username, u.full_name, u.assigned_forms
                     FROM school_users u
                     JOIN user_activity_log a ON u.user_id = a.user_id
-                    WHERE a.form_level = ? 
-                    AND a.timestamp > ?
+                    WHERE a.form_level = %s 
+                    AND a.timestamp > %s
                     AND a.activity_type IN ('login', 'data_entry', 'form_access')
-                    ORDER BY a.timestamp DESC
+                    ORDER BY u.user_id
                 """, (form_level, cutoff_time))
                 
                 active_users = []
@@ -247,7 +216,7 @@ class SchoolUserManager:
                         'user_id': row[0],
                         'username': row[1],
                         'full_name': row[2],
-                        'assigned_forms': eval(row[3])
+                        'assigned_forms': json.loads(row[3])
                     })
                 
                 return active_users
@@ -259,19 +228,19 @@ class SchoolUserManager:
     def check_form_access_conflict(self, user_id: int, form_level: int) -> Dict:
         """Check if user can access form without conflicts"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Get user's assigned forms
                 cursor.execute("""
-                    SELECT assigned_forms FROM school_users WHERE user_id = ?
+                    SELECT assigned_forms FROM school_users WHERE user_id = %s
                 """, (user_id,))
                 
                 result = cursor.fetchone()
                 if not result:
                     return {'can_access': False, 'reason': 'User not found'}
                 
-                assigned_forms = eval(result[0])
+                assigned_forms = json.loads(result[0])
                 
                 # Check if user is assigned to this form
                 if form_level not in assigned_forms:

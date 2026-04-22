@@ -4,440 +4,209 @@ School Reporting Database System
 Main application for managing student records, grades, and reports
 With separate tracking for Report Card items vs Internal Assessment items
 Created: 2025-08-06
+Database: PostgreSQL (psycopg2)
 """
 
-import sqlite3
+import json
 import pandas as pd
 from datetime import datetime, date
 import os
 from typing import List, Dict, Optional, Tuple, Any
 import logging
 
-# Optional Postgres support (psycopg2)
-try:
-    import psycopg2
-    HAVE_PSYCOPG2 = True
-except ImportError:
-    psycopg2 = None
-    HAVE_PSYCOPG2 = False
+# PostgreSQL is the sole database backend
+import psycopg2
+import psycopg2.extras
 
-# Import persistent data manager for Render deployment
-try:
-    from persistent_data_manager import PersistentDataManager
-    PERSISTENT_MANAGER = PersistentDataManager()
-except ImportError:
-    PERSISTENT_MANAGER = None
-    logging.warning("Persistent data manager not available - using default storage")
+# Default PostgreSQL connection for local development
+DEFAULT_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/school_reports'
+
+# Default Grading Rules
+DEFAULT_JUNIOR_GRADING = [
+    {"grade": "A", "min": 80, "max": 100, "comment": "Excellent"},
+    {"grade": "B", "min": 70, "max": 79, "comment": "Very Good"},
+    {"grade": "C", "min": 60, "max": 69, "comment": "Good"},
+    {"grade": "D", "min": 50, "max": 59, "comment": "Average"},
+    {"grade": "F", "min": 0, "max": 49, "comment": "Fail"}
+]
+
+DEFAULT_SENIOR_GRADING = [
+    {"grade": "1", "min": 75, "max": 100, "comment": "Distinction"},
+    {"grade": "2", "min": 70, "max": 74, "comment": "Distinction"},
+    {"grade": "3", "min": 65, "max": 69, "comment": "Strong Credit"},
+    {"grade": "4", "min": 60, "max": 64, "comment": "Credit"},
+    {"grade": "5", "min": 55, "max": 59, "comment": "Credit"},
+    {"grade": "6", "min": 50, "max": 54, "comment": "Credit"},
+    {"grade": "7", "min": 45, "max": 49, "comment": "Pass"},
+    {"grade": "8", "min": 40, "max": 44, "comment": "Mere Pass"},
+    {"grade": "9", "min": 0, "max": 39, "comment": "Fail"}
+]
 
 class SchoolDatabase:
     """Main class for managing school database operations"""
     
     def __init__(self, db_path: str = None):
-        """Initialize database connection and setup logging"""
-        # Detect whether to use Postgres (DATABASE_URL) or SQLite file
-        self.use_postgres = False
-        database_url = os.environ.get('DATABASE_URL')
-        if database_url:
-            # Prefer Postgres when DATABASE_URL is set
-            if not HAVE_PSYCOPG2:
-                raise ImportError("psycopg2 is required for Postgres support. Install psycopg2-binary in requirements.txt")
-            self.use_postgres = True
-            self.db_path = database_url
-        else:
-            if db_path is None:
-                # Use persistent storage in production, local file in development
-                if PERSISTENT_MANAGER:
-                    db_path = PERSISTENT_MANAGER.get_database_path()
-                else:
-                    db_path = os.environ.get('DATABASE_PATH', 'school_reports.db')
-                
-                # Ensure directory exists for persistent storage
-                if db_path != 'school_reports.db':
-                    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        """Initialize database connection and setup logging.
+        
+        Uses PostgreSQL exclusively. Connection string is read from:
+        1. DATABASE_URL environment variable
+        2. A local .env file
+        3. The db_path argument (treated as a Postgres DSN)
+        4. DEFAULT_DATABASE_URL constant (local development default)
+        """
+        self.use_postgres = True  # Always Postgres
+        
+        # Load local .env if it exists (manual parse to avoid dependency)
+        self.load_env_file()
+
+        if db_path:
             self.db_path = db_path
+        else:
+            self.db_path = os.environ.get('DATABASE_URL', DEFAULT_DATABASE_URL)
 
         self.setup_logging()
         self.init_database()
         
-        # Setup persistent storage features
-        if PERSISTENT_MANAGER:
-            PERSISTENT_MANAGER.setup_auto_backup()
-            
-            # Log whether we are using persistent disk
-            using_disk = PERSISTENT_MANAGER.is_using_persistent_disk()
-            self.logger.info(f"Persistent disk in use: {using_disk}")
-            self.logger.info(f"Database path: {self.db_path}")
-
-            # Verify data integrity on startup
+        # Verify data integrity on startup
+        try:
             integrity_status = self.verify_data_integrity_on_startup()
             self.logger.info(f"Data integrity check: {integrity_status['status']} - {integrity_status['message']}")
-            
-            # Create initial backup if database exists and has data
-            if os.path.exists(self.db_path) and integrity_status.get('status') == 'valid':
-                self.logger.info("Creating initial backup of existing database")
-                PERSISTENT_MANAGER.create_backup(self.db_path)
-                self.create_data_protection_checkpoint()
-
-            # If the persistent manager indicates we are not using persistent disk, warn the operator
-            if not PERSISTENT_MANAGER.is_using_persistent_disk():
-                self.logger.warning("PersistentDataManager detected that the configured DATABASE_PATH may not be on a persistent disk. Please ensure DATABASE_PATH points to a persistent volume on Render.")
+        except Exception as e:
+            self.logger.warning(f"Integrity check skipped: {e}")
     
     def setup_logging(self):
         """Setup logging configuration"""
+        # Ensure log file is created in the script directory, not CWD
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(base_dir, 'school_database.log')
+        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('school_database.log'),
+                logging.FileHandler(log_path, encoding='utf-8'),
                 logging.StreamHandler()
             ]
         )
         self.logger = logging.getLogger(__name__)
     
+    def load_env_file(self):
+        """Simple .env file parser to avoid python-dotenv dependency"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        env_path = os.path.join(base_dir, '.env')
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                os.environ[key.strip()] = value.strip()
+            except Exception as e:
+                print(f"Warning: Error reading .env file: {e}")
+
     def init_database(self):
-        """Initialize the database with schema if it doesn't exist"""
-        try:
-            # Check for data protection before initializing
-            if not self.protect_against_data_wipe():
-                self.logger.error("Database initialization blocked by data protection")
-                raise Exception("Database operation blocked to prevent data loss")
-            
-            # If running with Postgres, initialize Postgres-compatible schema
-            if getattr(self, 'use_postgres', False):
-                self.init_postgres_database()
-                return
+        """Initialize the PostgreSQL database with schema if tables don't exist"""
+        self.init_postgres_database()
 
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Create tables if they don't exist
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS students (
-                        student_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        student_number TEXT,
-                        first_name TEXT NOT NULL,
-                        last_name TEXT NOT NULL,
-                        date_of_birth TEXT,
-                        grade_level INTEGER NOT NULL,
-                        email TEXT,
-                        phone TEXT,
-                        address TEXT,
-                        parent_guardian_name TEXT,
-                        parent_guardian_phone TEXT,
-                        parent_guardian_email TEXT,
-                        status TEXT DEFAULT 'Active',
-                        date_enrolled TEXT DEFAULT CURRENT_TIMESTAMP,
-                        school_id INTEGER NOT NULL,
-                        UNIQUE(student_number, school_id)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS student_marks (
-                        mark_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        student_id INTEGER NOT NULL,
-                        subject TEXT NOT NULL,
-                        mark INTEGER NOT NULL,
-                        grade TEXT NOT NULL,
-                        term TEXT NOT NULL,
-                        academic_year TEXT NOT NULL,
-                        form_level INTEGER NOT NULL,
-                        date_entered TEXT DEFAULT CURRENT_TIMESTAMP,
-                        school_id INTEGER NOT NULL,
-                        FOREIGN KEY (student_id) REFERENCES students (student_id),
-                        UNIQUE(student_id, subject, term, academic_year, school_id)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS school_settings (
-                        setting_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        school_name TEXT,
-                        school_address TEXT,
-                        school_phone TEXT,
-                        school_email TEXT,
-                        pta_fund TEXT,
-                        sdf_fund TEXT,
-                        boarding_fee TEXT,
-                        next_term_begins TEXT,
-                        boys_uniform TEXT,
-                        girls_uniform TEXT,
-                        selected_term TEXT,
-                        selected_academic_year TEXT,
-                        updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        school_id INTEGER,
-                        UNIQUE(school_id)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS academic_periods (
-                        period_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        academic_year TEXT NOT NULL,
-                        period_name TEXT NOT NULL,
-                        start_date TEXT,
-                        end_date TEXT,
-                        is_active INTEGER DEFAULT 0,
-                        school_id INTEGER,
-                        created_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(academic_year, period_name, school_id)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS subject_teachers (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        subject TEXT NOT NULL,
-                        form_level INTEGER NOT NULL,
-                        teacher_name TEXT NOT NULL,
-                        updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        school_id INTEGER,
-                        UNIQUE(subject, form_level, school_id)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS school_fees (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        pta_fund TEXT,
-                        sdf_fund TEXT,
-                        boarding_fee TEXT,
-                        updated_date TEXT DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS schools (
-                        school_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        school_name TEXT NOT NULL,
-                        username TEXT UNIQUE NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        status TEXT DEFAULT 'active',
-                        subscription_status TEXT DEFAULT 'trial',
-                        subscription_start_date TEXT,
-                        subscription_end_date TEXT,
-                        days_remaining INTEGER DEFAULT 90,
-                        must_change_password INTEGER DEFAULT 0,
-                        created_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        last_login TEXT
-                    )
-                """)
-                
-                # Add school_id columns to existing tables if they don't exist
-                try:
-                    cursor.execute("ALTER TABLE students ADD COLUMN school_id INTEGER")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE student_marks ADD COLUMN school_id INTEGER")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE subject_teachers ADD COLUMN school_id INTEGER")
-                except:
-                    pass
-                
-                # Add missing columns to school_settings
-                try:
-                    cursor.execute("ALTER TABLE school_settings ADD COLUMN sdf_fund TEXT")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE school_settings ADD COLUMN boarding_fee TEXT")
-                except:
-                    pass
-                
-                # Fix UNIQUE constraint for student_number to be per school
-                try:
-                    # Check if we need to recreate the students table
-                    cursor.execute("PRAGMA table_info(students)")
-                    columns = cursor.fetchall()
-                    
-                    # Create new table with correct constraints
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS students_new (
-                            student_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            student_number TEXT,
-                            first_name TEXT NOT NULL,
-                            last_name TEXT NOT NULL,
-                            date_of_birth TEXT,
-                            grade_level INTEGER NOT NULL,
-                            email TEXT,
-                            phone TEXT,
-                            address TEXT,
-                            parent_guardian_name TEXT,
-                            parent_guardian_phone TEXT,
-                            parent_guardian_email TEXT,
-                            status TEXT DEFAULT 'Active',
-                            date_enrolled TEXT DEFAULT CURRENT_TIMESTAMP,
-                            school_id INTEGER,
-                            UNIQUE(student_number, school_id)
-                        )
-                    """)
-                    
-                    # Copy data from old table
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO students_new 
-                        SELECT * FROM students
-                    """)
-                    
-                    # Drop old table and rename new one
-                    cursor.execute("DROP TABLE students")
-                    cursor.execute("ALTER TABLE students_new RENAME TO students")
-                    
-                except Exception as e:
-                    # If recreation fails, just continue - table might already be correct
-                    pass
-                
-                # Add subscription columns to existing schools table if they don't exist
-                try:
-                    cursor.execute("ALTER TABLE schools ADD COLUMN subscription_status TEXT DEFAULT 'trial'")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE schools ADD COLUMN subscription_start_date TEXT")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE schools ADD COLUMN subscription_end_date TEXT")
-                except:
-                    pass
-                
-                try:
-                    cursor.execute("ALTER TABLE schools ADD COLUMN days_remaining INTEGER DEFAULT 90")
-                except:
-                    pass
-
-                try:
-                    cursor.execute("ALTER TABLE schools ADD COLUMN must_change_password INTEGER DEFAULT 0")
-                except:
-                    pass
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS subscription_notifications (
-                        notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        school_id INTEGER,
-                        message TEXT NOT NULL,
-                        notification_type TEXT DEFAULT 'reminder',
-                        sent_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                        is_read INTEGER DEFAULT 0,
-                        FOREIGN KEY (school_id) REFERENCES schools (school_id)
-                    )
-                """)
-                
-                # Update existing schools with default subscription values
-                cursor.execute("""
-                    UPDATE schools 
-                    SET subscription_status = 'trial', days_remaining = 90 
-                    WHERE subscription_status IS NULL OR subscription_status = ''
-                """)
-                
-                # Add selected_term and selected_academic_year columns if they don't exist
-                cursor.execute("PRAGMA table_info(school_settings)")
-                columns = [row[1] for row in cursor.fetchall()]
-                
-                if 'selected_term' not in columns:
-                    try:
-                        cursor.execute("ALTER TABLE school_settings ADD COLUMN selected_term TEXT")
-                        self.logger.info("Added selected_term column to school_settings")
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" not in str(e):
-                            self.logger.error(f"Error adding selected_term column: {e}")
-                
-                if 'selected_academic_year' not in columns:
-                    try:
-                        cursor.execute("ALTER TABLE school_settings ADD COLUMN selected_academic_year TEXT")
-                        self.logger.info("Added selected_academic_year column to school_settings")
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" not in str(e):
-                            self.logger.error(f"Error adding selected_academic_year column: {e}")
-                
-                # Create default settings for existing schools that don't have settings
-                cursor.execute("""
-                    SELECT s.school_id, s.school_name, s.username 
-                    FROM schools s 
-                    LEFT JOIN school_settings ss ON s.school_id = ss.school_id 
-                    WHERE ss.school_id IS NULL
-                """)
-                schools_without_settings = cursor.fetchall()
-                
-                for school_id, school_name, username in schools_without_settings:
-                    # Create blank settings for existing schools - waiting for admin to edit
-                    cursor.execute("""
-                        INSERT INTO school_settings 
-                        (school_name, school_address, school_phone, school_email, pta_fund, sdf_fund, boarding_fee, next_term_begins, boys_uniform, girls_uniform, selected_term, selected_academic_year, school_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        '',  # Blank - admin will fill in
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',  # selected_term - blank initially
-                        '',  # selected_academic_year - blank initially
-                        school_id
-                    ))
-                
-                # Insert default fees if none exist
-                cursor.execute("SELECT COUNT(*) FROM school_fees")
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("""
-                        INSERT INTO school_fees (pta_fund, sdf_fund, boarding_fee)
-                        VALUES (?, ?, ?)
-                    """, ("", "", "MK 150,000"))
-                
-                # Insert default subject teachers if none exist
-                cursor.execute("SELECT COUNT(*) FROM subject_teachers")
-                if cursor.fetchone()[0] == 0:
-                    subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
-                               'Chichewa', 'Computer Studies', 'English', 'Geography', 
-                               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics']
-
-                    # Determine whether subject_teachers.school_id allows NULL
-                    cursor.execute("PRAGMA table_info(subject_teachers)")
-                    cols = cursor.fetchall()
-                    school_id_notnull = 0
-                    for c in cols:
-                        # PRAGMA table_info returns: cid,name,type,notnull,dflt_value,pk
-                        if c[1] == 'school_id':
-                            school_id_notnull = c[3]
-                            break
-
-                    default_school_id = None if school_id_notnull == 0 else 0
-
-                    for form_level in [1, 2, 3, 4]:
-                        for subject in subjects:
-                            cursor.execute("""
-                                INSERT INTO subject_teachers (subject, form_level, teacher_name, school_id)
-                                VALUES (?, ?, ?, ?)
-                            """, (subject, form_level, f"{subject} Teacher F{form_level}", default_school_id))
-                
-                self.logger.info("Database initialized successfully")
-                
-        except Exception as e:
-            self.logger.error(f"Error initializing database: {e}")
-            raise
-    
     def init_postgres_database(self):
-        """Initialize Postgres database with tables compatible with current schema."""
+        """Initialize Postgres database with complete schema."""
         try:
-            if not HAVE_PSYCOPG2:
-                self.logger.error("psycopg2 not available; cannot initialize Postgres database")
-                raise ImportError("psycopg2 not available")
-            conn = psycopg2.connect(self.db_path)
+            try:
+                conn = psycopg2.connect(self.db_path)
+            except psycopg2.OperationalError as e:
+                error_msg = str(e)
+                if 'database "school_reports" does not exist' in error_msg:
+                    self.logger.info("Database 'school_reports' does not exist. Attempting to create it...")
+                    if self.create_database_if_not_exists():
+                        # Retry connection after creation
+                        conn = psycopg2.connect(self.db_path)
+                    else:
+                        raise
+                elif "password authentication failed" in error_msg:
+                    print("\n" + "!"*60)
+                    print("DATABASE AUTHENTICATION ERROR:")
+                    print(f"Password authentication failed for user 'postgres'.")
+                    print("Please ensure the password in your .env file or DATABASE_URL is correct.")
+                    print("!"*60 + "\n")
+                    raise
+                elif "Connection refused" in error_msg or "connection to server at" in error_msg:
+                    # Try fallback to 127.0.0.1 if localhost fails
+                    if "localhost" in self.db_path:
+                        try:
+                            fallback_path = self.db_path.replace("localhost", "127.0.0.1")
+                            self.logger.info(f"Retrying connection with 127.0.0.1 instead of localhost...")
+                            conn = psycopg2.connect(fallback_path)
+                            self.db_path = fallback_path
+                            return self._proceed_with_init(conn)
+                        except Exception:
+                            pass
+
+                    print("\n" + "="*60)
+                    print("DATABASE CONNECTION ERROR:")
+                    print("Could not connect to PostgreSQL. Please ensure:")
+                    print("1. The PostgreSQL service is RUNNING (check services.msc)")
+                    print("2. The database 'school_reports' exists")
+                    print("3. Your DATABASE_URL or credentials in .env are correct")
+                    print("="*60 + "\n")
+                    raise
+                else:
+                    raise
+            
+            return self._proceed_with_init(conn)
+        except Exception as e:
+            self.logger.error(f"Error initializing PostgreSQL database: {e}")
+            raise
+
+    def create_database_if_not_exists(self):
+        """Connect to default 'postgres' database and create 'school_reports'"""
+        try:
+            # Construct connection string for default 'postgres' database
+            # We assume the credentials are the same
+            if 'school_reports' in self.db_path:
+                postgres_db_path = self.db_path.replace('school_reports', 'postgres')
+            else:
+                # Fallback if the path is weird
+                return False
+                
+            # Connect to default postgres DB
+            temp_conn = psycopg2.connect(postgres_db_path)
+            temp_conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+            temp_cur = temp_conn.cursor()
+            
+            # Create database
+            temp_cur.execute("CREATE DATABASE school_reports")
+            
+            temp_cur.close()
+            temp_conn.close()
+            self.logger.info("Successfully created database 'school_reports'")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to create database: {e}")
+            return False
+
+    def _proceed_with_init(self, conn):
+        """Internal helper to finish database initialization once connected"""
+        try:
             cur = conn.cursor()
 
-            # Use Postgres-compatible table definitions
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS schools (
+                school_id SERIAL PRIMARY KEY,
+                school_name TEXT NOT NULL,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                subscription_status TEXT DEFAULT 'trial',
+                subscription_start_date TEXT,
+                subscription_end_date TEXT,
+                days_remaining INTEGER DEFAULT 90,
+                must_change_password INTEGER DEFAULT 0,
+                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT
+            )""")
+
             cur.execute("""
             CREATE TABLE IF NOT EXISTS students (
                 student_id SERIAL PRIMARY KEY,
@@ -456,8 +225,7 @@ class SchoolDatabase:
                 date_enrolled TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 school_id INTEGER,
                 UNIQUE(student_number, school_id)
-            )
-            """)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS student_marks (
@@ -470,9 +238,21 @@ class SchoolDatabase:
                 academic_year TEXT NOT NULL,
                 form_level INTEGER NOT NULL,
                 date_entered TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                school_id INTEGER NOT NULL
-            )
-            """)
+                school_id INTEGER NOT NULL,
+                UNIQUE(student_id, subject, term, academic_year, school_id)
+            )""")
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_term_enrollment (
+                enrollment_id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                term TEXT NOT NULL,
+                academic_year TEXT NOT NULL,
+                form_level INTEGER NOT NULL,
+                school_id INTEGER NOT NULL,
+                date_enrolled TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(student_id, term, academic_year, school_id)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS school_settings (
@@ -489,10 +269,16 @@ class SchoolDatabase:
                 girls_uniform TEXT,
                 selected_term TEXT,
                 selected_academic_year TEXT,
+                form_1_teacher_signature TEXT,
+                form_2_teacher_signature TEXT,
+                form_3_teacher_signature TEXT,
+                form_4_teacher_signature TEXT,
+                head_teacher_signature TEXT,
+                junior_grading_rules TEXT,
+                senior_grading_rules TEXT,
                 updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 school_id INTEGER UNIQUE
-            )
-            """)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS academic_periods (
@@ -504,9 +290,8 @@ class SchoolDatabase:
                 is_active INTEGER DEFAULT 0,
                 school_id INTEGER,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (academic_year, period_name, school_id)
-            )
-            """)
+                UNIQUE(academic_year, period_name, school_id)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS subject_teachers (
@@ -515,9 +300,9 @@ class SchoolDatabase:
                 form_level INTEGER NOT NULL,
                 teacher_name TEXT NOT NULL,
                 updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                school_id INTEGER
-            )
-            """)
+                school_id INTEGER,
+                UNIQUE(subject, form_level, school_id)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS school_fees (
@@ -526,25 +311,7 @@ class SchoolDatabase:
                 sdf_fund TEXT,
                 boarding_fee TEXT,
                 updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS schools (
-                school_id SERIAL PRIMARY KEY,
-                school_name TEXT NOT NULL,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                status TEXT DEFAULT 'active',
-                subscription_status TEXT DEFAULT 'trial',
-                subscription_start_date TEXT,
-                subscription_end_date TEXT,
-                days_remaining INTEGER DEFAULT 90,
-                must_change_password INTEGER DEFAULT 0,
-                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TEXT
-            )
-            """)
+            )""")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS subscription_notifications (
@@ -554,104 +321,156 @@ class SchoolDatabase:
                 notification_type TEXT DEFAULT 'reminder',
                 sent_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_read INTEGER DEFAULT 0
-            )
+            )""")
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS school_users (
+                user_id SERIAL PRIMARY KEY,
+                school_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                email TEXT,
+                role TEXT DEFAULT 'teacher',
+                assigned_forms TEXT DEFAULT '[]',
+                is_active INTEGER DEFAULT 1,
+                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT,
+                session_token TEXT,
+                session_expires TEXT,
+                UNIQUE(username, school_id)
+            )""")
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity_log (
+                activity_id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                activity_type TEXT NOT NULL,
+                form_level INTEGER,
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            # Create default fees if none exist
+            cur.execute("SELECT COUNT(*) FROM school_fees")
+            if cur.fetchone()[0] == 0:
+                cur.execute("""
+                    INSERT INTO school_fees (pta_fund, sdf_fund, boarding_fee)
+                    VALUES (%s, %s, %s)
+                """, ("", "", ""))
+
+            # Create default settings for schools that don't have them
+            cur.execute("""
+                SELECT s.school_id, s.school_name
+                FROM schools s
+                LEFT JOIN school_settings ss ON s.school_id = ss.school_id
+                WHERE ss.school_id IS NULL
             """)
+            for school_id, school_name in cur.fetchall():
+                cur.execute("""
+                    INSERT INTO school_settings (school_name, school_id)
+                    VALUES (%s, %s)
+                """, ('', school_id))
 
             conn.commit()
             cur.close()
             conn.close()
-            self.logger.info("Postgres database initialized successfully")
+            self.logger.info("PostgreSQL database initialized successfully")
         except Exception as e:
-            self.logger.error(f"Error initializing Postgres database: {e}")
-            raise
+            if 'conn' in locals() and conn:
+                conn.rollback()
+            raise e
 
-    def create_schema(self, conn):
-        """Create database schema from SQL file"""
-        try:
-            with open('database_schema.sql', 'r') as file:
-                schema_sql = file.read()
-                conn.executescript(schema_sql)
-        except FileNotFoundError:
-            self.logger.error("database_schema.sql file not found!")
-            raise
+
     
     def _adapt_query(self, query: str) -> str:
-        """Adapt SQL query placeholders for the selected DB backend"""
-        if getattr(self, 'use_postgres', False):
-            return query.replace('?', '%s')
-        return query
+        """Adapt SQL query placeholders: ? -> %s for PostgreSQL"""
+        return query.replace('?', '%s')
+
+    def _pandas_read_sql(self, query, conn, params=None):
+        """Read SQL into DataFrame without pandas DBAPI warnings."""
+        with conn.cursor() as cursor:
+            cursor.execute(query.replace('?', '%s'), params or ())
+            rows = cursor.fetchall()
+            columns = [col[0] for col in cursor.description] if cursor.description else []
+        return pd.DataFrame(rows, columns=columns)
 
     def get_connection(self):
-        """Get database connection. Uses psycopg2 for Postgres when configured, else SQLite."""
-        if getattr(self, 'use_postgres', False):
-            # psycopg2 accepts a DSN-style URL in connect()
-            conn = psycopg2.connect(self.db_path)
+        """Get PostgreSQL database connection with CursorAdapter."""
+        conn = psycopg2.connect(self.db_path)
 
-            # Wrap the cursor factory to adapt SQLite-style queries (?), to postgres (%s)
-            dbself = self
-            class CursorAdapter:
-                def __init__(self, cursor):
-                    self._cursor = cursor
+        # Wrap the cursor to adapt SQLite-style queries (?) to postgres (%s)
+        class CursorAdapter:
+            def __init__(self, cursor, parent_conn):
+                self._cursor = cursor
+                self._conn = parent_conn
+                self._lastrowid = None
+
+            def execute(self, query, params=None):
+                q = query.replace('?', '%s')
+                self._cursor.execute(q, params or ())
+                try:
+                    if q.strip().lower().startswith('insert'):
+                        # Using a separate cursor to get LASTVAL safely
+                        with self._conn.cursor(inner=True) as c2:
+                            c2.execute('SELECT LASTVAL()')
+                            res = c2.fetchone()
+                            self._lastrowid = res[0] if res else None
+                except Exception:
                     self._lastrowid = None
+                return self
 
-                def execute(self, query, params=None):
-                    q = query.replace('?', '%s') if dbself.use_postgres else query
-                    self._cursor.execute(q, params or ())
-                    # If insert, attempt to capture lastval
-                    try:
-                        if dbself.use_postgres and q.strip().lower().startswith('insert'):
-                            # Use a separate cursor to fetch LASTVAL so we don't disturb results
-                            with conn.cursor() as c2:
-                                c2.execute('SELECT LASTVAL()')
-                                res = c2.fetchone()
-                                self._lastrowid = res[0] if res else None
-                    except Exception:
-                        self._lastrowid = None
-                    return self._cursor
+            def executemany(self, query, seq_of_params):
+                q = query.replace('?', '%s')
+                return self._cursor.executemany(q, seq_of_params)
 
-                def executemany(self, query, seq_of_params):
-                    q = query.replace('?', '%s') if dbself.use_postgres else query
-                    return self._cursor.executemany(q, seq_of_params)
+            def fetchone(self):
+                return self._cursor.fetchone()
 
-                def fetchone(self):
-                    return self._cursor.fetchone()
+            def fetchall(self):
+                return self._cursor.fetchall()
 
-                def fetchall(self):
-                    return self._cursor.fetchall()
+            def __getattr__(self, name):
+                return getattr(self._cursor, name)
 
-                def __getattr__(self, name):
-                    return getattr(self._cursor, name)
+            def __enter__(self):
+                return self
 
-                @property
-                def lastrowid(self):
-                    if dbself.use_postgres:
-                        return self._lastrowid
-                    return getattr(self._cursor, 'lastrowid', None)
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self._cursor.close()
 
-            # Replace cursor method to return adapter
-            def cursor_factory(*args, **kwargs):
-                return CursorAdapter(conn.cursor(*args, **kwargs))
+            @property
+            def lastrowid(self):
+                return self._lastrowid
 
-            conn.cursor = cursor_factory
-            return conn
+            @property
+            def rowcount(self):
+                return self._cursor.rowcount
 
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        # Prefer DELETE journaling on Windows to avoid locking issues with temporary files
-        try:
-            conn.execute('PRAGMA journal_mode=DELETE')
-        except sqlite3.OperationalError:
-            # If the DB is briefly locked by another connection, retry once after a short delay
-            import time
-            time.sleep(0.05)
-            try:
-                conn.execute('PRAGMA journal_mode=DELETE')
-            except Exception:
-                # Give up changing the journal mode and proceed; caller will handle any locks
-                pass
-        conn.execute('PRAGMA synchronous=NORMAL')
-        conn.execute('PRAGMA cache_size=10000')
-        conn.execute('PRAGMA temp_store=memory')
-        return conn
+        class ConnectionWrapper:
+            def __init__(self, real_conn):
+                self._conn = real_conn
+
+            def cursor(self, *args, **kwargs):
+                # Internal flag to avoid recursion when getting lastval
+                if kwargs.pop('inner', False):
+                    return self._conn.cursor(*args, **kwargs)
+                return CursorAdapter(self._conn.cursor(*args, **kwargs), self._conn)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type:
+                    self._conn.rollback()
+                else:
+                    self._conn.commit()
+                self._conn.close()
+
+        return ConnectionWrapper(conn)
     
     def _get_next_student_serial_number(self, school_id: Optional[int]) -> str:
         """Generate the next student serial number for a specific school"""
@@ -672,12 +491,8 @@ class SchoolDatabase:
             return f"{int(time.time()) % 10000:04d}"
 
     # STUDENT MANAGEMENT METHODS
-    def add_student(self, student_data: Dict, school_id: Optional[int] = None) -> int:
-        """Add a new student to the database for a specific school.
-
-        `school_id` is optional for legacy or single-school setups; when omitted
-        the student will be stored with a NULL `school_id`.
-        """
+    def add_student(self, student_data: Dict, school_id: int) -> int:
+        """Add a new student to the database for a specific school - strictly isolated."""
             
         try:
             with self.get_connection() as conn:
@@ -719,12 +534,12 @@ class SchoolDatabase:
             self.logger.error(f"Error adding student: {e}")
             raise
     
-    def get_student_by_id(self, student_id: int) -> Optional[Dict]:
-        """Get student information by ID"""
+    def get_student_by_id(self, student_id: int, school_id: int) -> Optional[Dict]:
+        """Get student information by ID - strictly isolated by school ownership."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(self._adapt_query("SELECT * FROM students WHERE student_id = ?"), (student_id,))
+                cursor.execute(self._adapt_query("SELECT * FROM students WHERE student_id = ? AND school_id = ?"), (student_id, school_id))
                 row = cursor.fetchone()
                 if row:
                     columns = [description[0] for description in cursor.description]
@@ -750,28 +565,140 @@ class SchoolDatabase:
             self.logger.error(f"Error checking marks for period: {e}")
             return False
     
-    def get_students_by_grade(self, grade_level: int, school_id: int = None) -> List[Dict]:
-        """Get all students in a specific grade level. If `school_id` is provided, filter by school."""
-            
+    def get_students_by_grade(self, grade_level: int, school_id: int) -> List[Dict]:
+        """Get all students in a specific grade level - strictly isolated by school."""
         try:
             with self.get_connection() as conn:
-                if school_id:
-                    df = pd.read_sql_query(
-                        "SELECT * FROM students WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '') AND school_id = ? ORDER BY first_name, last_name",
-                        conn, params=(grade_level, school_id)
-                    )
-                else:
-                    df = pd.read_sql_query(
-                        "SELECT * FROM students WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '') ORDER BY first_name, last_name",
-                        conn, params=(grade_level,)
-                    )
+                # Always filter by school_id to prevent data leakage
+                df = self._pandas_read_sql(
+                    "SELECT * FROM students WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '') AND school_id = ? ORDER BY first_name, last_name",
+                    conn, params=(grade_level, school_id)
+                )
                 return df.to_dict('records')
         except Exception as e:
             self.logger.error(f"Error retrieving students for grade {grade_level}: {e}")
             raise
+
+    def enroll_student_in_term(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int):
+        """Enroll a student in a specific term/academic year."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO student_term_enrollment (student_id, term, academic_year, form_level, school_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (student_id, term, academic_year, school_id) DO NOTHING
+                """, (student_id, term, academic_year, form_level, school_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            self.logger.error(f"Error enrolling student {student_id} in {term} {academic_year}: {e}")
+            return False
+
+    def bulk_upload_students_data(self, rows_to_process: List[Dict], term: str, academic_year: str, form_level: int, school_id: int, duplicate_action: str) -> Dict:
+        """Process multiple student records and their marks in a single transaction."""
+        success_count = 0
+        mark_count = 0
+        fail_count = 0
+        errors = []
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                for row_data in rows_to_process:
+                    try:
+                        # Use savepoint for each student to allow partial success in Postgres
+                        cursor.execute("SAVEPOINT student_upload")
+                        student_id = None
+                        
+                        if row_data['is_duplicate']:
+                            if duplicate_action == 'skip':
+                                student_id = row_data['existing_student_id']
+                            else:
+                                # Add as new student (maintain)
+                                cursor.execute("""
+                                    INSERT INTO students (first_name, last_name, grade_level, school_id, status)
+                                    VALUES (?, ?, ?, ?, 'Active')
+                                    RETURNING student_id
+                                """, (row_data['first_name'], row_data['last_name'], form_level, school_id))
+                                
+                                student_id = cursor.fetchone()[0]
+                                success_count += 1
+                        else:
+                            # New student
+                            cursor.execute("""
+                                INSERT INTO students (first_name, last_name, grade_level, school_id, status)
+                                VALUES (?, ?, ?, ?, 'Active')
+                                RETURNING student_id
+                            """, (row_data['first_name'], row_data['last_name'], form_level, school_id))
+                            
+                            student_id = cursor.fetchone()[0]
+                            success_count += 1
+                        
+                        # Enroll student in the current term/year
+                        if student_id and term and academic_year:
+                            cursor.execute("""
+                                INSERT INTO student_term_enrollment (student_id, term, academic_year, form_level, school_id)
+                                VALUES (?, ?, ?, ?, ?)
+                                ON CONFLICT (student_id, term, academic_year, school_id) DO NOTHING
+                            """, (student_id, term, academic_year, form_level, school_id))
+                        
+                        # Save marks if available
+                        if student_id and row_data.get('marks') and term and academic_year:
+                            for subject, mark in row_data['marks'].items():
+                                # Calculate grade based on mark and school settings
+                                grade = self.calculate_grade(mark, form_level, school_id)
+                                
+                                cursor.execute("""
+                                    INSERT INTO student_marks (student_id, subject, mark, grade, term, academic_year, form_level, school_id)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    ON CONFLICT (student_id, subject, term, academic_year, school_id) 
+                                    DO UPDATE SET mark = EXCLUDED.mark, grade = EXCLUDED.grade
+                                """, (student_id, subject, mark, grade, term, academic_year, form_level, school_id))
+                                mark_count += 1
+                        
+                        cursor.execute("RELEASE SAVEPOINT student_upload")
+                                
+                    except Exception as e:
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT student_upload")
+                        except:
+                            pass
+                        fail_count += 1
+                        errors.append(f"{row_data['first_name']} {row_data['last_name']}: {str(e)}")
+                
+                conn.commit()
+                return {
+                    'success': True,
+                    'success_count': success_count,
+                    'mark_count': mark_count,
+                    'fail_count': fail_count,
+                    'errors': errors
+                }
+        except Exception as e:
+            self.logger.error(f"Bulk upload failed: {e}")
+            return {'success': False, 'message': str(e)}
+
+    def get_students_enrolled_in_term(self, form_level: int, term: str, academic_year: str, school_id: int) -> List[Dict]:
+        """Get students who are enrolled in a specific term and academic year."""
+        try:
+            with self.get_connection() as conn:
+                query = """
+                    SELECT s.* FROM students s
+                    JOIN student_term_enrollment e ON s.student_id = e.student_id
+                    WHERE e.form_level = ? AND e.term = ? AND e.academic_year = ? AND e.school_id = ?
+                    AND (s.status = 'Active' OR s.status IS NULL OR s.status = '')
+                    ORDER BY s.first_name, s.last_name
+                """
+                df = self._pandas_read_sql(query, conn, params=(form_level, term, academic_year, school_id))
+                return df.to_dict('records')
+        except Exception as e:
+            self.logger.error(f"Error retrieving enrolled students for {term} {academic_year}: {e}")
+            return []
     
-    def update_student(self, student_id: int, update_data: dict, school_id: int = None):
-        """Update student information with flexible field updates"""
+    def update_student(self, student_id: int, update_data: dict, school_id: int):
+        """Update student information - strictly isolated by school ownership."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -789,19 +716,14 @@ class SchoolDatabase:
                 if not update_fields:
                     return False
                 
-                # Add student_id to values
-                update_values.append(student_id)
+                # Add student_id and school_id to values
+                update_values.extend([student_id, school_id])
                 
-                # Add school filter if provided
-                where_clause = "WHERE student_id = ?"
-                if school_id:
-                    where_clause += " AND (school_id = ? OR school_id IS NULL)"
-                    update_values.append(school_id)
-                
-                query = f"UPDATE students SET {', '.join(update_fields)} {where_clause}"
+                # Strict ownership check
+                query = f"UPDATE students SET {', '.join(update_fields)} WHERE student_id = ? AND school_id = ?"
                 cursor.execute(query, update_values)
                 
-                self.logger.info(f"Updated student {student_id} with fields: {list(update_data.keys())}")
+                self.logger.info(f"Updated student {student_id} (School: {school_id})")
                 return cursor.rowcount > 0
                 
         except Exception as e:
@@ -813,7 +735,7 @@ class SchoolDatabase:
         """Get assessment types that appear on report cards"""
         try:
             with self.get_connection() as conn:
-                df = pd.read_sql_query(
+                df = self._pandas_read_sql(
                     "SELECT * FROM assessment_types WHERE show_on_report_card = TRUE ORDER BY type_name",
                     conn
                 )
@@ -826,7 +748,7 @@ class SchoolDatabase:
         """Get assessment types for internal tracking only"""
         try:
             with self.get_connection() as conn:
-                df = pd.read_sql_query(
+                df = self._pandas_read_sql(
                     "SELECT * FROM assessment_types WHERE is_internal_tracking = TRUE ORDER BY type_name",
                     conn
                 )
@@ -932,14 +854,10 @@ class SchoolDatabase:
             self.logger.error(f"Error calculating letter grade: {e}")
             return 'F'
     
-    def save_student_mark(self, student_id: int, subject: str, mark: int, term: str, academic_year: str, form_level: int, school_id: Optional[int] = None):
-        """Save student mark for a subject.
-
-        `school_id` is optional; when omitted the method will store marks without
-        a school_id (NULL) or infer from the student record when available.
-        """
-            
-        max_retries = 3
+    def save_student_mark(self, student_id: int, subject: str, mark: int, term: str, 
+                         academic_year: str, form_level: int, school_id: int):
+        """Save student mark - strictly isolated by school ownership."""
+        max_retries = 5
         retry_count = 0
         
         while retry_count < max_retries:
@@ -947,95 +865,56 @@ class SchoolDatabase:
                 with self.get_connection() as conn:
                     cursor = conn.cursor()
                     
-                    # Calculate grade based on form level
-                    grade = self.calculate_grade(mark, form_level)
-                    
-                    # If school_id not provided, try to infer from the student record
-                    if school_id is None:
-                        student = self.get_student_by_id(student_id)
-                        if student and 'school_id' in student:
-                            school_id = student.get('school_id')
-                    # If still None (legacy or single-school tests), default to 0 to satisfy NOT NULL schema
-                    if school_id is None:
-                        school_id = 0
+                    # Strict ownership check: Does this student belong to this school?
+                    cursor.execute("SELECT school_id FROM students WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                    if not cursor.fetchone():
+                        self.logger.warning(f"Unauthorized mark save attempt: Student {student_id} does not belong to School {school_id}")
+                        return False
 
-                    # Begin transaction (SQLite uses BEGIN IMMEDIATE; Postgres manages transactions differently)
-                    if not getattr(self, 'use_postgres', False):
-                        cursor.execute("BEGIN IMMEDIATE")
-                    
-                    # Insert or update mark
+                    # Calculate grade based on form level AND school rules
+                    grade = self.calculate_grade(mark, form_level, school_id)
+
+                    # Insert or update mark (Postgres ON CONFLICT)
                     insert_sql = """
-                        INSERT OR REPLACE INTO student_marks 
+                        INSERT INTO student_marks 
                         (student_id, subject, mark, grade, term, academic_year, form_level, date_entered, school_id)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (student_id, subject, term, academic_year, school_id)
+                        DO UPDATE SET mark = EXCLUDED.mark, grade = EXCLUDED.grade, 
+                                      form_level = EXCLUDED.form_level, date_entered = EXCLUDED.date_entered
                     """
                     cursor.execute(self._adapt_query(insert_sql), (student_id, subject, mark, grade, term, academic_year, form_level, datetime.now().isoformat(), school_id))
                     
-                    # Commit the transaction
-                    if getattr(self, 'use_postgres', False):
-                        conn.commit()
-                    else:
-                        conn.commit()
+                    conn.commit()
                     
                     self.logger.info(f"Saved mark for student {student_id}, subject {subject}: {mark} (School: {school_id})")
                     return  # Success, exit the retry loop
                     
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e).lower() and retry_count < max_retries - 1:
+            except Exception as e:
+                if retry_count < max_retries - 1:
                     retry_count += 1
                     import time
-                    time.sleep(0.1 * retry_count)  # Exponential backoff
-                    self.logger.warning(f"Database locked, retrying ({retry_count}/{max_retries})")
+                    time.sleep(0.1 * retry_count)
+                    self.logger.warning(f"DB error, retrying ({retry_count}/{max_retries}): {e}")
                     continue
                 else:
-                    self.logger.error(f"Database locked error after {max_retries} retries: {e}")
+                    self.logger.error(f"Error saving student mark after {max_retries} retries: {e}")
                     raise
-            except Exception as e:
-                self.logger.error(f"Error saving student mark: {e}")
-                raise
     
     def create_data_protection_checkpoint(self) -> bool:
-        """Create a data protection checkpoint to prevent accidental wipes"""
-        try:
-            if PERSISTENT_MANAGER:
-                # Create a protection checkpoint
-                checkpoint_path = os.path.join(os.path.dirname(self.db_path), '.data_protection')
-                with open(checkpoint_path, 'w') as f:
-                    f.write(f"checkpoint_created:{datetime.now().isoformat()}\n")
-                    f.write(f"database_path:{self.db_path}\n")
-                    f.write(f"database_size:{os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0}\n")
-                
-                self.logger.info("Data protection checkpoint created")
-                return True
-            return False
-        except Exception as e:
-            self.logger.error(f"Failed to create protection checkpoint: {e}")
-            return False
+        """Postgres handles data protection via managed backups."""
+        return True
+
     
     def verify_data_integrity_on_startup(self) -> Dict:
         """Verify data integrity on application startup"""
         try:
-            # For filesystem SQLite, check file existence
-            if not getattr(self, 'use_postgres', False) and not os.path.exists(self.db_path):
-                return {
-                    'status': 'no_database',
-                    'message': 'Database file not found - will create new one'
-                }
-            
             # Check if database is corrupted or empty
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                tables = []
-                if getattr(self, 'use_postgres', False):
-                    # Use information_schema to check for essential tables
-                    cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('students','student_marks','school_settings')")
-                    tables = [row[0] for row in cursor.fetchall()]
-                else:
-                    cursor.execute("""
-                        SELECT name FROM sqlite_master 
-                        WHERE type='table' AND name IN ('students', 'student_marks', 'school_settings')
-                    """)
-                    tables = [row[0] for row in cursor.fetchall()]
+                # Use information_schema to check for essential tables
+                cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('students','student_marks','school_settings')")
+                tables = [row[0] for row in cursor.fetchall()]
                 
                 if len(tables) < 3:
                     return {
@@ -1075,61 +954,21 @@ class SchoolDatabase:
             }
     
     def protect_against_data_wipe(self) -> bool:
-        """Protect against accidental data wipe operations"""
-        try:
-            # Check if this is a potential wipe operation
-            if PERSISTENT_MANAGER:
-                checkpoint_path = os.path.join(os.path.dirname(self.db_path), '.data_protection')
-                
-                if os.path.exists(checkpoint_path):
-                    # Read checkpoint data
-                    with open(checkpoint_path, 'r') as f:
-                        lines = f.readlines()
-                    
-                    checkpoint_data = {}
-                    for line in lines:
-                        if ':' in line:
-                            key, value = line.strip().split(':', 1)
-                            checkpoint_data[key] = value
-                    
-                    # Check current database size
-                    current_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
-                    expected_size = int(checkpoint_data.get('database_size', '0'))
-                    
-                    # If database size suddenly drops significantly, block operation
-                    if current_size < expected_size * 0.1:  # Less than 10% of expected size
-                        self.logger.warning(f"Potential data wipe detected - blocking operation")
-                        self.logger.warning(f"Expected size: {expected_size}, Current size: {current_size}")
-                        return False
-                
-            return True  # Allow operation
-        except Exception as e:
-            self.logger.error(f"Data protection check failed: {e}")
-            return True
-    
-    def get_student_marks(self, student_id: int, term: str, academic_year: str, school_id: int = None) -> Dict:
-        """Get all marks for a student in a term for a specific school. If school_id is omitted, try to infer from the student record."""
-        # If school_id is not provided, try to infer it from the student record.
-        inferred_school_id = school_id
-        if inferred_school_id is None:
-            student = self.get_student_by_id(student_id)
-            if student and 'school_id' in student and student.get('school_id') is not None:
-                inferred_school_id = student['school_id']
+        """Postgres handles protection via managed backups and permissions."""
+        return True
 
+    
+    def get_student_marks(self, student_id: int, term: str, academic_year: str, school_id: int) -> Dict:
+        """Get student marks for a specific term and academic year - strictly isolated."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if inferred_school_id is None:
-                    # No school filter: return marks for the student across any school_id (including NULL)
-                    cursor.execute("""
-                        SELECT subject, mark, grade FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ?
-                    """, (student_id, term, academic_year))
-                else:
-                    cursor.execute("""
-                        SELECT subject, mark, grade FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
-                    """, (student_id, term, academic_year, inferred_school_id))
+                
+                # Strict ownership check in the query itself
+                cursor.execute("""
+                    SELECT subject, mark, grade FROM student_marks 
+                    WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (student_id, term, academic_year, school_id))
 
                 marks = {}
                 for row in cursor.fetchall():
@@ -1141,24 +980,40 @@ class SchoolDatabase:
             self.logger.error(f"Error retrieving student marks: {e}")
             raise
     
-    def calculate_grade(self, mark: int, form_level: int) -> str:
-        """Calculate grade based on mark and form level"""
-        if form_level in [1, 2]:  # Junior forms
-            if mark >= 80: return 'A'
-            elif mark >= 70: return 'B'
-            elif mark >= 60: return 'C'
-            elif mark >= 50: return 'D'
-            else: return 'F'
-        else:  # Senior forms (3, 4)
-            if mark >= 75: return '1'
-            elif mark >= 70: return '2'
-            elif mark >= 65: return '3'
-            elif mark >= 60: return '4'
-            elif mark >= 55: return '5'
-            elif mark >= 50: return '6'
-            elif mark >= 45: return '7'
-            elif mark >= 40: return '8'
-            else: return '9'
+    def calculate_grade(self, mark: int, form_level: int, school_id: int = None) -> str:
+        """Calculate grade based on mark, form level and school-specific grading rules.
+        
+        If school_id is provided, looks up the school's custom grading boundaries.
+        Otherwise falls back to the module-level defaults.
+        """
+        # Determine which rule set to use
+        if form_level in [1, 2]:
+            rules = list(DEFAULT_JUNIOR_GRADING)  # copy of default
+        else:
+            rules = list(DEFAULT_SENIOR_GRADING)
+        
+        # Try to load school-specific rules
+        if school_id:
+            try:
+                settings = self.get_school_settings(school_id)
+                if form_level in [1, 2]:
+                    custom = settings.get('junior_grading_rules')
+                else:
+                    custom = settings.get('senior_grading_rules')
+                if custom and isinstance(custom, list) and len(custom) > 0:
+                    rules = custom
+            except Exception:
+                pass  # fall back to defaults
+        
+        # Sort rules by min descending so we match the highest bracket first
+        rules_sorted = sorted(rules, key=lambda r: r['min'], reverse=True)
+        
+        for rule in rules_sorted:
+            if mark >= rule['min']:
+                return rule['grade']
+        
+        # Fallback: return the last grade symbol (lowest bracket)
+        return rules_sorted[-1]['grade'] if rules_sorted else ('F' if form_level in [1, 2] else '9')
     
     def determine_pass_fail_status(self, passed_subjects: int, english_passed: bool) -> str:
         """Determine overall pass/fail status based on school criteria"""
@@ -1198,12 +1053,12 @@ class SchoolDatabase:
             return f'Passed only {passed_subjects} subjects and failed English'
     
     # REPORT GENERATION METHODS
-    def generate_termly_report_card(self, student_id: int, term: str, academic_year: str = '2024-2025') -> Dict:
+    def generate_termly_report_card(self, student_id: int, term: str, academic_year: str = '2024-2025', school_id: int = None) -> Dict:
         """Generate termly school report card with end-of-term exam marks and teacher names"""
         try:
             with self.get_connection() as conn:
                 # Get student info
-                student = self.get_student_by_id(student_id)
+                student = self.get_student_by_id(student_id, school_id)
                 if not student:
                     raise ValueError(f"Student with ID {student_id} not found")
                 
@@ -1228,20 +1083,33 @@ class SchoolDatabase:
                             WHEN 'Bible Knowledge' THEN 3
                             WHEN 'Chemistry' THEN 4
                             WHEN 'Chichewa' THEN 5
-                            WHEN 'Computer Studies' THEN 6
-                            WHEN 'English' THEN 7
-                            WHEN 'Geography' THEN 8
-                            WHEN 'History' THEN 9
-                            WHEN 'Life Skills/SOS' THEN 10
-                            WHEN 'Mathematics' THEN 11
-                            WHEN 'Physics' THEN 12
-                            ELSE 13
+                            WHEN 'Clothing & Textiles' THEN 6
+                            WHEN 'Computer Studies' THEN 7
+                            WHEN 'English' THEN 8
+                            WHEN 'Geography' THEN 9
+                            WHEN 'History' THEN 10
+                            WHEN 'Life Skills/SOS' THEN 11
+                            WHEN 'Mathematics' THEN 12
+                            WHEN 'Physics' THEN 13
+                            WHEN 'Technical Drawing' THEN 14
+                            WHEN 'Business Studies' THEN 15
+                            WHEN 'Home Economics' THEN 16
+                            ELSE 17
                         END
                 """
                 
-                grades_df = pd.read_sql_query(marks_query, conn, params=(
+                grades_df = self._pandas_read_sql(marks_query, conn, params=(
                     student_id, term, academic_year
                 ))
+                
+                # RECALCULATION: Ensure all letter grades reflect the CURRENT school-specific boundaries
+                school_id = student.get('school_id')
+                form_level = int(student.get('grade_level', 1))
+                if not grades_df.empty:
+                    grades_df['letter_grade'] = grades_df['percentage'].apply(
+                        lambda p: self.calculate_grade(int(p), form_level, school_id)
+                    )
+
                 
                 # Get attendance summary for the term
                 attendance_query = """
@@ -1257,7 +1125,7 @@ class SchoolDatabase:
                     AND ca.academic_year = ?
                     AND ca.semester = ?
                 """
-                attendance_df = pd.read_sql_query(attendance_query, conn, params=(student_id, academic_year, term))
+                attendance_df = self._pandas_read_sql(attendance_query, conn, params=(student_id, academic_year, term))
                 
                 # Calculate overall statistics
                 if not grades_df.empty:
@@ -1299,7 +1167,7 @@ class SchoolDatabase:
                     else:
                         # For passing students, use grade distribution logic
                         if not grades_df.empty:
-                            grades = [self.calculate_grade(int(row['percentage']), student['grade_level']) for _, row in grades_df.iterrows()]
+                            grades = [self.calculate_grade(int(row['percentage']), student['grade_level'], student.get('school_id')) for _, row in grades_df.iterrows()]
                             grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
                             for grade in grades:
                                 if grade in grade_counts:
@@ -1311,7 +1179,7 @@ class SchoolDatabase:
                             if len(most_common_grades) == 1:
                                 overall_grade = most_common_grades[0]
                             else:
-                                overall_grade = self.calculate_grade(int(overall_average), student['grade_level'])
+                                overall_grade = self.calculate_grade(int(overall_average), student['grade_level'], student.get('school_id'))
                             
                             # Ensure passing students don't get F grade
                             if overall_grade == 'F':
@@ -1327,7 +1195,7 @@ class SchoolDatabase:
                                     if len(most_common_pass_grades) == 1:
                                         overall_grade = most_common_pass_grades[0]
                                     else:
-                                        calculated_grade = self.calculate_grade(int(overall_average), student['grade_level'])
+                                        calculated_grade = self.calculate_grade(int(overall_average), student['grade_level'], student.get('school_id'))
                                         overall_grade = calculated_grade if calculated_grade != 'F' else 'D'
                                 else:
                                     overall_grade = 'D'  # Fallback for passed student
@@ -1335,7 +1203,7 @@ class SchoolDatabase:
                             overall_grade = 'F'
                 else:
                     # For senior forms, use traditional calculation
-                    overall_grade = self.calculate_grade(int(overall_average), student['grade_level'])
+                    overall_grade = self.calculate_grade(int(overall_average), student['grade_level'], student.get('school_id'))
                 
                 return {
                     'report_type': f'{term} School Report Card',
@@ -1360,12 +1228,12 @@ class SchoolDatabase:
             self.logger.error(f"Error generating termly report card: {e}")
             raise
     
-    def generate_internal_tracking_report(self, student_id: int, academic_year: str = None) -> Dict:
+    def generate_internal_tracking_report(self, student_id: int, academic_year: str = None, school_id: int = None) -> Dict:
         """Generate internal tracking report showing quiz, homework, projects, etc."""
         try:
             with self.get_connection() as conn:
                 # Get student info
-                student = self.get_student_by_id(student_id)
+                student = self.get_student_by_id(student_id, school_id)
                 if not student:
                     raise ValueError(f"Student with ID {student_id} not found")
                 
@@ -1397,7 +1265,7 @@ class SchoolDatabase:
                     grades_query += " AND ca.academic_year = ?"
                     params.append(academic_year)
                 
-                internal_grades_df = pd.read_sql_query(grades_query, conn, params=params)
+                internal_grades_df = self._pandas_read_sql(grades_query, conn, params=params)
                 
                 return {
                     'report_type': 'Internal Tracking Report',
@@ -1455,7 +1323,7 @@ class SchoolDatabase:
                     GROUP BY s.student_id
                     ORDER BY s.last_name, s.first_name
                 """
-                df = pd.read_sql_query(query, conn, params=(assignment_id,))
+                df = self._pandas_read_sql(query, conn, params=(assignment_id,))
                 return {
                     'report_type': f'Class Summary - {report_type.title()}',
                     'class_data': df.to_dict('records'),
@@ -1527,6 +1395,11 @@ class SchoolDatabase:
                     'girls_uniform': '',
                     'selected_term': '',
                     'selected_academic_year': '',
+                    'form_1_teacher_signature': '',
+                    'form_2_teacher_signature': '',
+                    'form_3_teacher_signature': '',
+                    'form_4_teacher_signature': '',
+                    'head_teacher_signature': '',
                     'academic_years': [],
                     'terms': [],
                     'academic_periods': []
@@ -1544,11 +1417,27 @@ class SchoolDatabase:
                 if row:
                     columns = [description[0] for description in cursor.description]
                     settings = dict(zip(columns, row))
-                    # Ensure selected_term and selected_academic_year are strings (not None)
-                    if settings.get('selected_term') is None:
-                        settings['selected_term'] = ''
-                    if settings.get('selected_academic_year') is None:
-                        settings['selected_academic_year'] = ''
+                    # Ensure critical fields are strings (not None)
+                    for field in ['school_name', 'school_address', 'school_phone', 'school_email', 
+                                 'selected_term', 'selected_academic_year', 'next_term_begins',
+                                 'boys_uniform', 'girls_uniform', 'boarding_fee',
+                                 'form_1_teacher_signature', 'form_2_teacher_signature',
+                                 'form_3_teacher_signature', 'form_4_teacher_signature',
+                                 'head_teacher_signature']:
+                        if settings.get(field) is None:
+                            settings[field] = ''
+                        
+                    # Parse grading rules from JSON
+                    try:
+                        settings['junior_grading_rules'] = json.loads(settings.get('junior_grading_rules') or 'null') or DEFAULT_JUNIOR_GRADING
+                    except Exception:
+                        settings['junior_grading_rules'] = DEFAULT_JUNIOR_GRADING
+                        
+                    try:
+                        settings['senior_grading_rules'] = json.loads(settings.get('senior_grading_rules') or 'null') or DEFAULT_SENIOR_GRADING
+                    except Exception:
+                        settings['senior_grading_rules'] = DEFAULT_SENIOR_GRADING
+                        
                 else:
                     # If no settings exist for this school, return blank settings
                     settings = {
@@ -1618,7 +1507,7 @@ class SchoolDatabase:
                     }
 
                 # Get student info
-                student_info = self.get_student_by_id(student_id)
+                student_info = self.get_student_by_id(student_id, school_id)
                 if not student_info:
                     return {'position': 'N/A', 'aggregate_points': 0, 'total_students': total_students}
                 
@@ -1665,7 +1554,7 @@ class SchoolDatabase:
                     if form_level >= 3:
                         grade_points = []
                         for mark in best_marks:
-                            grade = self.calculate_grade(mark, form_level)
+                            grade = self.calculate_grade(mark, form_level, school_id)
                             grade_points.append(int(grade) if grade.isdigit() else 9)
                         aggregate_points = sum(grade_points)
                     else:
@@ -1696,6 +1585,19 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 # Use form-level specific pass threshold
                 pass_threshold = 50 if form_level in [1, 2] else 40
+
+                # Get total learners enrolled in this class/form (Active students)
+                if school_id:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM students 
+                        WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')
+                    """, (form_level, school_id))
+                else:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM students 
+                        WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '')
+                    """, (form_level,))
+                total_class_size = cursor.fetchone()[0]
                 
                 # Get ALL students who have marks for this form, term, and academic year
                 if school_id:
@@ -1724,6 +1626,7 @@ class SchoolDatabase:
                     if school_id:
                         cursor.execute(f"""
                             SELECT AVG(sm.mark) as average,
+                                   SUM(sm.mark) as total_marks,
                                    COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
                                    COUNT(sm.mark) as total_subjects
                             FROM student_marks sm
@@ -1732,6 +1635,7 @@ class SchoolDatabase:
                     else:
                         cursor.execute(f"""
                             SELECT AVG(sm.mark) as average,
+                                   SUM(sm.mark) as total_marks,
                                    COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
                                    COUNT(sm.mark) as total_subjects
                             FROM student_marks sm
@@ -1740,8 +1644,9 @@ class SchoolDatabase:
                     
                     marks_data = cursor.fetchone()
                     average = marks_data[0] if marks_data and marks_data[0] is not None else 0
-                    subjects_passed = marks_data[1] if marks_data else 0
-                    total_subjects = marks_data[2] if marks_data else 0
+                    total_marks = marks_data[1] if marks_data and marks_data[1] is not None else 0
+                    subjects_passed = marks_data[2] if marks_data else 0
+                    total_subjects = marks_data[3] if marks_data else 0
                     
                     # Check if student wrote insufficient subjects (1-5)
                     if total_subjects <= 5:
@@ -1749,9 +1654,10 @@ class SchoolDatabase:
                             # Forms 1&2: Give F grade
                             rankings.append({
                                 'name': f"{first_name} {last_name}",
-                                'average': 0,
+                                'average': average,
+                                'total_marks': total_marks,
                                 'grade': 'F',
-                                'subjects_passed': 0,
+                                'subjects_passed': subjects_passed,
                                 'status': 'FAIL',
                                 'total_subjects': total_subjects
                             })
@@ -1759,9 +1665,10 @@ class SchoolDatabase:
                             # CRITICAL RULE: Forms 3&4 students with 1-5 subjects MUST get 54 aggregate points
                             rankings.append({
                                 'name': f"{first_name} {last_name}",
-                                'average': 0,
+                                'average': average,
+                                'total_marks': total_marks,
                                 'aggregate_points': 54,
-                                'subjects_passed': 0,
+                                'subjects_passed': subjects_passed,
                                 'status': 'FAIL',
                                 'total_subjects': total_subjects
                             })
@@ -1798,13 +1705,14 @@ class SchoolDatabase:
                         
                         grade_points = []
                         for mark in best_marks:
-                            grade = self.calculate_grade(mark, form_level)
+                            grade = self.calculate_grade(mark, form_level, school_id)
                             grade_points.append(int(grade) if grade.isdigit() else 9)
                         aggregate_points = sum(grade_points)
                         
                         rankings.append({
                             'name': f"{first_name} {last_name}",
                             'average': average,
+                            'total_marks': total_marks,
                             'aggregate_points': aggregate_points,
                             'subjects_passed': subjects_passed,
                             'status': status,
@@ -1824,7 +1732,7 @@ class SchoolDatabase:
                             marks = [row[0] for row in cursor.fetchall()]
                             
                             # Find the most common passing grade
-                            passing_grades = [self.calculate_grade(mark, form_level) for mark in marks if self.is_subject_passed(mark, form_level)]
+                            passing_grades = [self.calculate_grade(mark, form_level, school_id) for mark in marks if self.is_subject_passed(mark, form_level)]
                             if passing_grades:
                                 grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
                                 for g in passing_grades:
@@ -1841,6 +1749,7 @@ class SchoolDatabase:
                         rankings.append({
                             'name': f"{first_name} {last_name}",
                             'average': average,
+                            'total_marks': total_marks,
                             'grade': grade,
                             'subjects_passed': subjects_passed,
                             'status': status,
@@ -1870,17 +1779,17 @@ class SchoolDatabase:
                         else:
                             student['position'] = position
                 else:
-                    # For Forms 1&2: Sort by status (PASS first), then average marks (highest first)
-                    rankings.sort(key=lambda x: (x['status'] == 'FAIL', -x['average']))
+                    # For Forms 1&2: Sort by status (PASS first), then total marks (highest first), then average
+                    rankings.sort(key=lambda x: (x['status'] == 'FAIL', -x['total_marks'], -x['average']))
                     
                     # Add tied positions for Forms 1&2
                     position = 1
                     for i, student in enumerate(rankings):
                         if i > 0:
                             prev_student = rankings[i-1]
-                            # Same position if same status and same average (rounded to 1 decimal)
+                            # Same position if same status and same total marks
                             if (student['status'] == prev_student['status'] and 
-                                round(student['average'], 1) == round(prev_student['average'], 1)):
+                                student['total_marks'] == prev_student['total_marks']):
                                 student['position'] = prev_student['position']
                             else:
                                 position = i + 1
@@ -1894,7 +1803,7 @@ class SchoolDatabase:
                 # Return both rankings and counts
                 return {
                     'rankings': rankings,
-                    'total_students': len(rankings),  # Total students who have marks (actual class size)
+                    'total_students': total_class_size,  # Total learners entered for this particular class/form
                     'students_with_marks': students_with_marks  # Students who sat for at least one exam
                 }
                 
@@ -1909,37 +1818,38 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 if school_id:
                     cursor.execute("""
-                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                         FROM students s
                         JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
-                        GROUP BY s.student_id
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ? AND sm.school_id = ?
+                        GROUP BY s.student_id, s.first_name, s.last_name
                         HAVING COUNT(sm.mark_id) >= 6
-                        ORDER BY average DESC
+                        ORDER BY total_marks DESC, average DESC
                         LIMIT ?
-                    """, (form_level, term, academic_year, school_id, limit))
+                    """, (form_level, term, academic_year, school_id, school_id, limit))
                 else:
                     cursor.execute("""
-                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                         FROM students s
                         JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ?
-                        GROUP BY s.student_id
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
+                        GROUP BY s.student_id, s.first_name, s.last_name
                         HAVING COUNT(sm.mark_id) >= 6
-                        ORDER BY average DESC
+                        ORDER BY total_marks DESC, average DESC
                         LIMIT ?
                     """, (form_level, term, academic_year, limit))
                 
                 performers = []
                 for row in cursor.fetchall():
-                    student_id, first_name, last_name, average = row
-                    grade = self.calculate_grade(int(average), form_level)
+                    student_id, first_name, last_name, average, total_marks = row
+                    grade = self.calculate_grade(int(average), form_level, school_id)
                     
                     performers.append({
                         'name': f"{first_name} {last_name}",
                         'average': round(average, 1),
+                        'total_marks': total_marks,
                         'grade': grade if form_level <= 2 else None,
-                        'aggregate_points': self.calculate_aggregate_points_for_student(student_id, term, academic_year, form_level) if form_level >= 3 else None
+                        'aggregate_points': self.calculate_aggregate_points_for_student(student_id, term, academic_year, form_level, school_id) if form_level >= 3 else None
                     })
                 
                 return performers
@@ -1959,7 +1869,7 @@ class SchoolDatabase:
                                MIN(sm.mark) as min_mark, MAX(sm.mark) as max_mark
                         FROM student_marks sm
                         JOIN students s ON sm.student_id = s.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
                         GROUP BY sm.subject
                         ORDER BY avg_mark DESC
                     """, (form_level, term, academic_year, school_id))
@@ -1969,7 +1879,7 @@ class SchoolDatabase:
                                MIN(sm.mark) as min_mark, MAX(sm.mark) as max_mark
                         FROM student_marks sm
                         JOIN students s ON sm.student_id = s.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ?
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
                         GROUP BY sm.subject
                         ORDER BY avg_mark DESC
                     """, (form_level, term, academic_year))
@@ -1984,14 +1894,14 @@ class SchoolDatabase:
                         cursor.execute("""
                             SELECT COUNT(*) FROM student_marks sm
                             JOIN students s ON sm.student_id = s.student_id
-                            WHERE sm.subject = ? AND s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? 
-                            AND sm.mark >= ? AND s.school_id = ?
+                            WHERE sm.subject = ? AND sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? 
+                            AND sm.mark >= ? AND sm.school_id = ?
                         """, (subject, form_level, term, academic_year, pass_threshold, school_id))
                     else:
                         cursor.execute("""
                             SELECT COUNT(*) FROM student_marks sm
                             JOIN students s ON sm.student_id = s.student_id
-                            WHERE sm.subject = ? AND s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? 
+                            WHERE sm.subject = ? AND sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? 
                             AND sm.mark >= ?
                         """, (subject, form_level, term, academic_year, pass_threshold))
                     
@@ -2026,27 +1936,27 @@ class SchoolDatabase:
                         # For Forms 3&4: Sort by lowest aggregate points (best performance)
                         if school_id:
                             cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                                 FROM students s
                                 JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
-                                GROUP BY s.student_id
+                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
+                                GROUP BY s.student_id, s.first_name, s.last_name
                                 HAVING COUNT(sm.mark_id) >= 6
                             """, (form_level, term, academic_year, school_id))
                         else:
                             cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                                 FROM students s
                                 JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ?
-                                GROUP BY s.student_id
+                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
+                                GROUP BY s.student_id, s.first_name, s.last_name
                                 HAVING COUNT(sm.mark_id) >= 6
                             """, (form_level, term, academic_year))
                         
                         performers = []
                         for row in cursor.fetchall():
-                            student_id, first_name, last_name, average = row
-                            aggregate_points = self.calculate_aggregate_points_for_student(student_id, term, academic_year, form_level)
+                            student_id, first_name, last_name, average, total_marks = row
+                            aggregate_points = self.calculate_aggregate_points_for_student(student_id, term, academic_year, form_level, school_id)
                             
                             performers.append({
                                 'name': f"{first_name} {last_name}",
@@ -2062,31 +1972,31 @@ class SchoolDatabase:
                         # For Forms 1&2: Sort by highest average
                         if school_id:
                             cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                                 FROM students s
                                 JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
-                                GROUP BY s.student_id
+                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
+                                GROUP BY s.student_id, s.first_name, s.last_name
                                 HAVING COUNT(sm.mark_id) >= 6
-                                ORDER BY average DESC
+                                ORDER BY total_marks DESC, average DESC
                                 LIMIT 10
                             """, (form_level, term, academic_year, school_id))
                         else:
                             cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average
+                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
                                 FROM students s
                                 JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ?
-                                GROUP BY s.student_id
+                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
+                                GROUP BY s.student_id, s.first_name, s.last_name
                                 HAVING COUNT(sm.mark_id) >= 6
-                                ORDER BY average DESC
+                                ORDER BY total_marks DESC, average DESC
                                 LIMIT 10
                             """, (form_level, term, academic_year))
                         
                         performers = []
                         for row in cursor.fetchall():
-                            student_id, first_name, last_name, average = row
-                            grade = self.calculate_grade(int(average), form_level)
+                            student_id, first_name, last_name, average, total_marks = row
+                            grade = self.calculate_grade(int(average), form_level, school_id)
                             
                             performers.append({
                                 'name': f"{first_name} {last_name}",
@@ -2099,10 +2009,10 @@ class SchoolDatabase:
             
             # Define subject groups for department-based performance (user-specified groups)
             subject_groups = {
-                # Sciences include the full science list including Business Studies and Home Economics
-                'sciences': ['Agriculture', 'Biology', 'Chemistry', 'Physics', 'Mathematics', 'Business Studies', 'Home Economics'],
+                # Sciences include Agriculture, Biology, Chemistry, Computer Studies, Mathematics, Physics, Business Studies, Home Economics, Clothing & Textiles, Technical Drawing
+                'sciences': ['Agriculture', 'Biology', 'Chemistry', 'Computer Studies', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics', 'Clothing & Textiles', 'Technical Drawing'],
                 'humanities': ['Bible Knowledge', 'Geography', 'History', 'Life Skills/SOS'],
-                # Languages are Chichewa and English; ranking based on total marks across both
+                # Languages are English and Chichewa; ranking based on total marks across both
                 'languages': ['English', 'Chichewa']
             }
             
@@ -2124,10 +2034,10 @@ class SchoolDatabase:
                                COUNT(DISTINCT sm.subject) as subjects_taken
                         FROM students s
                         JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ?
                         AND sm.subject IN ({placeholders})
-                        GROUP BY s.student_id
-                        HAVING subjects_taken >= 1
+                        GROUP BY s.student_id, s.first_name, s.last_name
+                        HAVING COUNT(DISTINCT sm.subject) >= 1
                         ORDER BY department_total DESC
                         LIMIT 10
                     """, (form_level, term, academic_year, school_id, *subjects))
@@ -2138,10 +2048,10 @@ class SchoolDatabase:
                                COUNT(DISTINCT sm.subject) as subjects_taken
                         FROM students s
                         JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE s.grade_level = ? AND sm.term = ? AND sm.academic_year = ?
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
                         AND sm.subject IN ({placeholders})
-                        GROUP BY s.student_id
-                        HAVING subjects_taken >= 1
+                        GROUP BY s.student_id, s.first_name, s.last_name
+                        HAVING COUNT(DISTINCT sm.subject) >= 1
                         ORDER BY department_total DESC
                         LIMIT 10
                     """, (form_level, term, academic_year, *subjects))
@@ -2184,7 +2094,7 @@ class SchoolDatabase:
             self.logger.error(f"Error getting top performers: {e}")
             return []
     
-    def calculate_aggregate_points_for_student(self, student_id: int, term: str, academic_year: str, form_level: int) -> int:
+    def calculate_aggregate_points_for_student(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int = None) -> int:
         """Calculate aggregate points for Forms 3&4 (sum of best 6 subjects converted to MSCE grade points)"""
         try:
             with self.get_connection() as conn:
@@ -2203,7 +2113,7 @@ class SchoolDatabase:
                 # Convert marks to MSCE grade points and sum them
                 aggregate_points = 0
                 for mark in marks:
-                    grade = self.calculate_grade(mark, form_level)
+                    grade = self.calculate_grade(mark, form_level, school_id)
                     if grade.isdigit():
                         aggregate_points += int(grade)
                     else:
@@ -2214,6 +2124,37 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error calculating aggregate points: {e}")
             return None
+
+    def get_subjects_by_form(self, form_level: int, school_id: int = None) -> List[str]:
+        """Get list of subjects for a specific form level and school"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if school_id:
+                    cursor.execute("""
+                        SELECT DISTINCT subject FROM subject_teachers 
+                        WHERE form_level = ? AND school_id = ?
+                        ORDER BY subject
+                    """, (form_level, school_id))
+                else:
+                    cursor.execute("""
+                        SELECT DISTINCT subject FROM subject_teachers 
+                        WHERE form_level = ?
+                        ORDER BY subject
+                    """, (form_level,))
+                
+                subjects = [row[0] for row in cursor.fetchall()]
+                
+                # If no subjects found in subject_teachers, return the default list from init_database
+                if not subjects:
+                    subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
+                               'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+                               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics']
+                
+                return sorted(subjects)
+        except Exception as e:
+            self.logger.error(f"Error getting subjects by form: {e}")
+            return []
 
     def get_subject_teachers(self, form_level: int = None, school_id: int = None) -> Dict[str, str]:
         """Get subject teachers for specific form level and school"""
@@ -2239,8 +2180,10 @@ class SchoolDatabase:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO subject_teachers (subject, form_level, teacher_name, updated_date, school_id)
+                    INSERT INTO subject_teachers (subject, form_level, teacher_name, updated_date, school_id)
                     VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (subject, form_level, school_id)
+                    DO UPDATE SET teacher_name = EXCLUDED.teacher_name, updated_date = EXCLUDED.updated_date
                 """, (subject, form_level, teacher_name, datetime.now().isoformat(), school_id))
                 self.logger.info(f"Updated teacher for {subject} Form {form_level}: {teacher_name}")
         except Exception as e:
@@ -2325,70 +2268,81 @@ class SchoolDatabase:
             self.logger.error(f"Error getting subject position: {e}")
             return "0/0"
     
-    def get_teacher_comment(self, grade: str) -> str:
-        """Get teacher comment based on grade for Forms 3&4"""
-        grade_comments = {
-            '1': 'Distinction',
-            '2': 'Distinction', 
-            '3': 'Strong Credit',
-            '4': 'Credit',
-            '5': 'Credit',
-            '6': 'Credit',
-            '7': 'Pass',
-            '8': 'Mere Pass',
-            '9': 'Fail',
-            'A': 'Excellent',
-            'B': 'Very Good',
-            'C': 'Good', 
-            'D': 'Average',
-            'F': 'Fail'
+    def get_teacher_comment(self, grade: str, form_level: int = 3, school_id: int = None) -> str:
+        """Get teacher comment based on grade, supporting custom rules if available"""
+        # Default fallback mapping
+        default_comments = {
+            '1': 'Distinction', '2': 'Distinction', '3': 'Strong Credit',
+            '4': 'Credit', '5': 'Credit', '6': 'Credit',
+            '7': 'Pass', '8': 'Mere Pass', '9': 'Fail',
+            'A': 'Excellent', 'B': 'Very Good', 'C': 'Good', 'D': 'Average', 'F': 'Fail'
         }
-        return grade_comments.get(grade, 'Needs Improvement')
+        
+        # Try to get from school-specific rules
+        if school_id:
+            try:
+                settings = self.get_school_settings(school_id)
+                rules = settings.get('junior_grading_rules' if form_level in [1, 2] else 'senior_grading_rules')
+                if rules and isinstance(rules, list):
+                    for rule in rules:
+                        if rule.get('grade') == grade and rule.get('comment'):
+                            return rule['comment']
+            except Exception:
+                pass
+                
+        return default_comments.get(grade, 'N/A')
     
     def update_school_settings(self, settings_data: Dict, school_id: int = None):
-        """Update school settings in database"""
+        """Update school settings in database - supports partial updates"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Extract selected term and academic year from the data
-                # If terms/academic_years are arrays, use the first element as selected
-                selected_term = settings_data.get('selected_term', '')
-                if not selected_term and 'terms' in settings_data:
-                    terms_list = settings_data.get('terms', [])
-                    if isinstance(terms_list, list) and len(terms_list) > 0:
-                        selected_term = terms_list[0]
+                # Ensure a row exists for this school_id
+                cursor.execute("SELECT COUNT(*) FROM school_settings WHERE school_id = ?", (school_id,))
+                exists = cursor.fetchone()[0] > 0
                 
-                selected_academic_year = settings_data.get('selected_academic_year', '')
-                if not selected_academic_year and 'academic_years' in settings_data:
-                    years_list = settings_data.get('academic_years', [])
-                    if isinstance(years_list, list) and len(years_list) > 0:
-                        selected_academic_year = years_list[0]
+                if not exists:
+                    # Initial insert with provided data or defaults
+                    cursor.execute("""
+                        INSERT INTO school_settings (school_id, updated_date)
+                        VALUES (?, ?)
+                    """, (school_id, datetime.now().isoformat()))
                 
-                cursor.execute("""
-                    INSERT OR REPLACE INTO school_settings 
-                    (school_name, school_address, school_phone, school_email, 
-                     pta_fund, sdf_fund, boarding_fee, next_term_begins, boys_uniform, girls_uniform, 
-                     selected_term, selected_academic_year, updated_date, school_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    settings_data.get('school_name'),
-                    settings_data.get('school_address'),
-                    settings_data.get('school_phone'),
-                    settings_data.get('school_email'),
-                    settings_data.get('pta_fund'),
-                    settings_data.get('sdf_fund'),
-                    settings_data.get('boarding_fee'),
-                    settings_data.get('next_term_begins'),
-                    settings_data.get('boys_uniform'),
-                    settings_data.get('girls_uniform'),
-                    selected_term,
-                    selected_academic_year,
-                    datetime.now().isoformat(),
-                    school_id
-                ))
+                # Build dynamic UPDATE statement based on keys in settings_data
+                update_fields = []
+                update_values = []
                 
-                self.logger.info("School settings updated successfully")
+                # Map of allowed fields to their dictionary keys
+                allowed_fields = [
+                    'school_name', 'school_address', 'school_phone', 'school_email',
+                    'pta_fund', 'sdf_fund', 'boarding_fee', 'next_term_begins',
+                    'boys_uniform', 'girls_uniform', 'selected_term', 'selected_academic_year',
+                    'junior_grading_rules', 'senior_grading_rules',
+                    'form_1_teacher_signature', 'form_2_teacher_signature',
+                    'form_3_teacher_signature', 'form_4_teacher_signature',
+                    'head_teacher_signature'
+                ]
+                
+                for field in allowed_fields:
+                    if field in settings_data:
+                        val = settings_data[field]
+                        # Special handling for JSON fields
+                        if field in ['junior_grading_rules', 'senior_grading_rules'] and isinstance(val, list):
+                            val = json.dumps(val)
+                        
+                        update_fields.append(f"{field} = ?")
+                        update_values.append(val)
+                
+                if update_fields:
+                    update_fields.append("updated_date = ?")
+                    update_values.append(datetime.now().isoformat())
+                    update_values.append(school_id)
+                    
+                    query = f"UPDATE school_settings SET {', '.join(update_fields)} WHERE school_id = ?"
+                    cursor.execute(self._adapt_query(query), update_values)
+                
+                self.logger.info(f"School settings updated successfully (School: {school_id}, Partial: True)")
         except Exception as e:
             self.logger.error(f"Error updating school settings: {e}")
             raise
@@ -2399,65 +2353,16 @@ class SchoolDatabase:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Check which columns exist in academic_periods table
-                cursor.execute("PRAGMA table_info(academic_periods)")
-                columns = [row[1] for row in cursor.fetchall()]
-                
-                # Add created_date column if it doesn't exist
-                if 'created_date' not in columns:
-                    try:
-                        cursor.execute("ALTER TABLE academic_periods ADD COLUMN created_date TEXT DEFAULT CURRENT_TIMESTAMP")
-                        self.logger.info("Added created_date column to academic_periods table")
-                        columns.append('created_date')  # Update our list
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" not in str(e):
-                            self.logger.error(f"Error adding created_date column: {e}")
-                
-                # Add school_id column if it doesn't exist
-                if 'school_id' not in columns:
-                    try:
-                        cursor.execute("ALTER TABLE academic_periods ADD COLUMN school_id INTEGER")
-                        self.logger.info("Added school_id column to academic_periods table")
-                        columns.append('school_id')  # Update our list
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" not in str(e):
-                            self.logger.error(f"Error adding school_id column: {e}")
-                
-                # Build insert statement based on available columns
-                has_school_id = 'school_id' in columns
-                has_created_date = 'created_date' in columns
-                
                 for academic_year in academic_years:
                     for term in terms:
-                        if has_school_id and has_created_date:
-                            # Both columns exist
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO academic_periods 
-                                (academic_year, period_name, school_id, created_date)
-                                VALUES (?, ?, ?, ?)
-                            """, (academic_year.strip(), term.strip(), school_id, datetime.now().isoformat()))
-                        elif has_school_id:
-                            # Only school_id exists
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO academic_periods 
-                                (academic_year, period_name, school_id)
-                                VALUES (?, ?, ?)
-                            """, (academic_year.strip(), term.strip(), school_id))
-                        elif has_created_date:
-                            # Only created_date exists
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO academic_periods 
-                                (academic_year, period_name, created_date)
-                                VALUES (?, ?, ?)
-                            """, (academic_year.strip(), term.strip(), datetime.now().isoformat()))
-                        else:
-                            # Neither column exists (old schema)
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO academic_periods 
-                                (academic_year, period_name)
-                                VALUES (?, ?)
-                            """, (academic_year.strip(), term.strip()))
+                        cursor.execute("""
+                            INSERT INTO academic_periods 
+                            (academic_year, period_name, school_id, created_date)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT (academic_year, period_name, school_id) DO NOTHING
+                        """, (academic_year.strip(), term.strip(), school_id, datetime.now().isoformat()))
                 
+                conn.commit()
                 self.logger.info(f"Updated academic periods")
         except Exception as e:
             self.logger.error(f"Error updating academic periods: {e}")
@@ -2574,29 +2479,26 @@ class SchoolDatabase:
                 'boarding_fee': 'MK 150,000'
             }
     
-    def delete_student_marks(self, student_id: int, school_id: int = None):
-        """Delete all marks for a student"""
+    def delete_student_marks(self, student_id: int, school_id: int):
+        """Delete all marks for a student - strictly isolated."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id:
-                    cursor.execute("DELETE FROM student_marks WHERE student_id = ? AND (school_id = ? OR school_id IS NULL)", (student_id, school_id))
-                else:
-                    cursor.execute("DELETE FROM student_marks WHERE student_id = ?", (student_id,))
-                self.logger.info(f"Deleted all marks for student {student_id}")
+                cursor.execute("DELETE FROM student_marks WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                self.logger.info(f"Deleted all marks for student {student_id} (School: {school_id})")
         except Exception as e:
             self.logger.error(f"Error deleting student marks: {e}")
             raise
     
-    def delete_student(self, student_id: int, school_id: int = None):
-        """Delete a student record"""
+    def delete_student(self, student_id: int, school_id: int):
+        """Delete a student and their marks - strictly isolated."""
         try:
+            # First delete their marks
+            self.delete_student_marks(student_id, school_id)
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id:
-                    cursor.execute("DELETE FROM students WHERE student_id = ? AND (school_id = ? OR school_id IS NULL)", (student_id, school_id))
-                else:
-                    cursor.execute("DELETE FROM students WHERE student_id = ?", (student_id,))
+                cursor.execute("DELETE FROM students WHERE student_id = ? AND school_id = ?", (student_id, school_id))
                 
                 if cursor.rowcount > 0:
                     self.logger.info(f"Deleted student {student_id}")
@@ -2608,23 +2510,16 @@ class SchoolDatabase:
             self.logger.error(f"Error deleting student: {e}")
             raise
     
-    def update_student_name(self, student_id: int, first_name: str, last_name: str, school_id: int = None):
-        """Update a student's name"""
+    def update_student_name(self, student_id: int, first_name: str, last_name: str, school_id: int):
+        """Update a student's name - strictly isolated."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id:
-                    cursor.execute("""
-                        UPDATE students 
-                        SET first_name = ?, last_name = ? 
-                        WHERE student_id = ? AND (school_id = ? OR school_id IS NULL)
-                    """, (first_name, last_name, student_id, school_id))
-                else:
-                    cursor.execute("""
-                        UPDATE students 
-                        SET first_name = ?, last_name = ? 
-                        WHERE student_id = ?
-                    """, (first_name, last_name, student_id))
+                cursor.execute("""
+                    UPDATE students 
+                    SET first_name = ?, last_name = ? 
+                    WHERE student_id = ? AND school_id = ?
+                """, (first_name, last_name, student_id, school_id))
                 
                 if cursor.rowcount > 0:
                     self.logger.info(f"Updated student {student_id} name to {first_name} {last_name}")
@@ -2685,25 +2580,16 @@ class SchoolDatabase:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Check if subscription columns exist, if not add them
-                cursor.execute("PRAGMA table_info(schools)")
-                columns = [row[1] for row in cursor.fetchall()]
-                
-                # Newly created schools receive a temporary OTP password which they must change on first login
-                if 'subscription_status' in columns:
-                    cursor.execute("""
-                        INSERT INTO schools (school_name, username, password_hash, subscription_status, 
-                                           subscription_start_date, subscription_end_date, days_remaining, must_change_password)
-                        VALUES (?, ?, ?, 'trial', ?, ?, 90, 1)
-                    """, (school_data['school_name'], school_data['username'], password_hash, 
-                          start_date.isoformat(), end_date.isoformat()))
-                else:
-                    cursor.execute("""
-                        INSERT INTO schools (school_name, username, password_hash, must_change_password)
-                        VALUES (?, ?, ?, 1)
-                    """, (school_data['school_name'], school_data['username'], password_hash))
+                # All columns exist in Postgres schema — always use full insert
+                cursor.execute("""
+                    INSERT INTO schools (school_name, username, password_hash, subscription_status, 
+                                       subscription_start_date, subscription_end_date, days_remaining, must_change_password)
+                    VALUES (?, ?, ?, 'trial', ?, ?, 90, 1)
+                """, (school_data['school_name'], school_data['username'], password_hash, 
+                      start_date.isoformat(), end_date.isoformat()))
                 
                 school_id = cursor.lastrowid
+                conn.commit()
                 self.logger.info(f"Added school: {school_data['school_name']} (ID: {school_id})")
                 return school_id
         except Exception as e:

@@ -8,20 +8,25 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from school_database import SchoolDatabase
-import tempfile
 
 def test_academic_periods_protection():
     """Test that changing academic periods doesn't affect existing grades"""
-    
-    # Create a temporary database for testing
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_file:
-        test_db_path = tmp_file.name
-    
+    school_id = None
     try:
-        # Initialize database
-        db = SchoolDatabase(test_db_path)
+        # Initialize database (PostgreSQL mode)
+        db = SchoolDatabase()
         print("✓ Database initialized")
-        
+
+        # Create an isolated test school
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO schools (school_name, username, password_hash) VALUES (%s, %s, %s) RETURNING school_id",
+                ("Academic Periods Test School", "academic_periods_test", "hash")
+            )
+            school_id = cursor.fetchone()[0]
+            conn.commit()
+
         # Add a test student
         student_data = {
             'first_name': 'Test',
@@ -29,7 +34,7 @@ def test_academic_periods_protection():
             'grade_level': 1,
             'date_of_birth': '2010-01-01'
         }
-        student_id = db.add_student(student_data)
+        student_id = db.add_student(student_data, school_id)
         print(f"✓ Test student added with ID: {student_id}")
         
         # Add some test grades
@@ -43,12 +48,12 @@ def test_academic_periods_protection():
         }
         
         for subject, mark in test_marks.items():
-            db.save_student_mark(student_id, subject, mark, original_term, original_year, 1)
+            db.save_student_mark(student_id, subject, mark, original_term, original_year, 1, school_id)
         
         print(f"✓ Test grades saved for {original_term} {original_year}")
         
         # Verify grades exist
-        marks_before = db.get_student_marks(student_id, original_term, original_year)
+        marks_before = db.get_student_marks(student_id, original_term, original_year, school_id)
         print(f"✓ Retrieved {len(marks_before)} marks before changes")
         
         # Test 1: Add new academic periods via settings
@@ -58,11 +63,11 @@ def test_academic_periods_protection():
             'terms': ['Term 1', 'Term 2', 'Term 3', 'Term 4']  # Added new term
         }
         
-        db.update_school_settings(new_settings)
+        db.update_school_settings(new_settings, school_id)
         print("✓ Updated settings with new academic periods")
         
         # Verify original grades still exist
-        marks_after = db.get_student_marks(student_id, original_term, original_year)
+        marks_after = db.get_student_marks(student_id, original_term, original_year, school_id)
         print(f"✓ Retrieved {len(marks_after)} marks after changes")
         
         # Compare marks
@@ -85,7 +90,7 @@ def test_academic_periods_protection():
                 assert False, f"{subject} mark missing"
         
         # Test 2: Check available periods functionality
-        periods_data = db.get_available_terms_and_years()
+        periods_data = db.get_available_terms_and_years(school_id)
         print(f"✓ Available periods retrieved: {len(periods_data['periods_with_data'])} periods with data")
         
         # Verify our test data appears in periods with data
@@ -104,12 +109,12 @@ def test_academic_periods_protection():
         new_term = "Term 4"  # This is a newly added term
         new_year = "2025-2026"  # This is a newly added year
         
-        db.save_student_mark(student_id, 'Mathematics', 90, new_term, new_year, 1)
+        db.save_student_mark(student_id, 'Mathematics', 90, new_term, new_year, 1, school_id)
         print(f"✓ Added grade for new period {new_term} {new_year}")
         
         # Verify both old and new grades exist
-        old_marks = db.get_student_marks(student_id, original_term, original_year)
-        new_marks = db.get_student_marks(student_id, new_term, new_year)
+        old_marks = db.get_student_marks(student_id, original_term, original_year, school_id)
+        new_marks = db.get_student_marks(student_id, new_term, new_year, school_id)
         
         if len(old_marks) == 3 and len(new_marks) == 1:
             print("✓ Both old and new grades coexist correctly")
@@ -127,11 +132,18 @@ def test_academic_periods_protection():
         assert False, f"Test failed with error: {e}"
     
     finally:
-        # Clean up temporary database
-        try:
-            os.unlink(test_db_path)
-        except:
-            pass
+        # Clean up inserted test records
+        if school_id:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM student_marks WHERE school_id = %s", (school_id,))
+                    cursor.execute("DELETE FROM students WHERE school_id = %s", (school_id,))
+                    cursor.execute("DELETE FROM school_settings WHERE school_id = %s", (school_id,))
+                    cursor.execute("DELETE FROM schools WHERE school_id = %s", (school_id,))
+                    conn.commit()
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     print("Testing Academic Periods Protection System")

@@ -47,8 +47,6 @@ def main():
         print("✅ Flask application loaded successfully!")
         print("🌐 Starting web server...")
         print("📱 Open your browser and go to: http://localhost:5000")
-        print("🔑 Login credentials:")
-        print("   Developer: MAKONOKAya / NAMADEYIMKOLOWEKO1949")
         print("=" * 50)
         print("Press Ctrl+C to stop the server")
         print()

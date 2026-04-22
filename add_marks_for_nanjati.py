@@ -48,8 +48,8 @@ def add_sample_marks_for_nanjati():
     # Subjects for Form 1
     subjects = [
         'Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
-        'Chichewa', 'Computer Studies', 'English', 'Geography', 
-        'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 
+        'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+        'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 
         'Business Studies', 'Home Economics'
     ]
     

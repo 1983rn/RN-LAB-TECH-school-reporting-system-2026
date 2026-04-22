@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+
+{% block title %}Report Generator - Malawi School Reporting System{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-file-alt me-2"></i>Progress Report Generator</h2>
+        <p class="text-muted">Generate official progress reports for individual students</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">Report Parameters</h5>
+            </div>
+            <div class="card-body">
+                <form id="reportForm">
+                    <div class="mb-3">
+                        <label for="studentSelect" class="form-label">Select Student</label>
+                        <select class="form-select" id="studentSelect" required style="appearance: auto; -webkit-appearance: menulist; -moz-appearance: menulist;">
+                            <option value="">Choose a student...</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="termSelect" class="form-label">Term</label>
+                        <select class="form-select" id="termSelect" required>
+                            <option value="Term 1">Term 1</option>
+                            <option value="Term 2">Term 2</option>
+                            <option value="Term 3">Term 3</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="academicYear" class="form-label">Academic Year</label>
+                        <input type="text" class="form-control" id="academicYear" value="2024-2025" required>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="button" class="btn btn-info" onclick="generateReport()">
+                            <i class="fas fa-file-alt me-2"></i>Generate Report
+                        </button>
+                        <button type="button" class="btn btn-success" onclick="exportReport()">
+                            <i class="fas fa-download me-2"></i>Export as PDF
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header bg-secondary text-white">
+                <h6 class="mb-0">Student Summary</h6>
+            </div>
+            <div class="card-body" id="studentSummary">
+                <p class="text-muted">Select a student to view summary</p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Progress Report Preview</h5>
+            </div>
+            <div class="card-body">
+                <div id="loadingSpinner" class="text-center d-none">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Generating report...</p>
+                </div>
+                
+                <div id="reportPreview">
+                    <div class="text-center text-muted py-5">
+                        <i class="fas fa-file-alt fa-4x mb-3"></i>
+                        <p>Report preview will appear here after generation</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <h6><i class="fas fa-info-circle me-2"></i>Report Features</h6>
+            <ul class="mb-0">
+                <li>Official Malawi Government header and formatting</li>
+                <li>Complete subject grades with teacher comments</li>
+                <li>Position in class and aggregate points calculation</li>
+                <li>Automatic form teacher and head teacher comments</li>
+                <li>Pass/fail determination based on Ministry standards</li>
+                <li>Export to PDF for printing and distribution</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load all students on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadAllStudents();
+});
+
+function loadAllStudents() {
+    fetch('/api/get-all-students')
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const select = document.getElementById('studentSelect');
+            select.innerHTML = '<option value="">Choose a student...</option>';
+            
+            // Group students by form level
+            const studentsByForm = {};
+            data.students.forEach(student => {
+                const form = student.grade_level;
+                if (!studentsByForm[form]) {
+                    studentsByForm[form] = [];
+                }
+                studentsByForm[form].push(student);
+            });
+            
+            // Add optgroups for each form
+            Object.keys(studentsByForm).sort().forEach(form => {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = `Form ${form}`;
+                
+                studentsByForm[form].forEach(student => {
+                    const option = document.createElement('option');
+                    option.value = student.student_id;
+                    option.textContent = `${student.first_name} ${student.last_name} (ID: ${student.student_id})`;
+                    option.setAttribute('data-form', student.grade_level);
+                    optgroup.appendChild(option);
+                });
+                
+                select.appendChild(optgroup);
+            });
+        }
+    })
+    .catch(error => {
+        console.error('Error loading students:', error);
+    });
+}
+
+// Update student summary when selection changes
+document.getElementById('studentSelect').addEventListener('change', function() {
+    const studentId = this.value;
+    const selectedOption = this.options[this.selectedIndex];
+    
+    if (studentId) {
+        const form = selectedOption.getAttribute('data-form');
+        const name = selectedOption.textContent;
+        
+        document.getElementById('studentSummary').innerHTML = `
+            <p><strong>Student:</strong> ${name}</p>
+            <p><strong>Form Level:</strong> ${form}</p>
+            <p class="text-muted">Ready to generate report</p>
+        `;
+    } else {
+        document.getElementById('studentSummary').innerHTML = '<p class="text-muted">Select a student to view summary</p>';
+    }
+});
+
+function generateReport() {
+    const studentId = document.getElementById('studentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('academicYear').value;
+    
+    if (!studentId || !term || !academicYear) {
+        alert('Please fill in all fields');
+        return;
+    }
+    
+    showLoading();
+    
+    fetch('/api/generate-report-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            student_id: studentId,
+            term: term,
+            academic_year: academicYear
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            document.getElementById('reportPreview').innerHTML = 
+                '<div class="report-content"><pre class="bg-light p-3 border rounded" style="font-size: 11px; line-height: 1.4; white-space: pre; overflow-x: auto; word-wrap: normal;">' + 
+                data.report + '</pre></div>';
+        } else {
+            document.getElementById('reportPreview').innerHTML = 
+                '<div class="alert alert-danger">' + data.message + '</div>';
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        document.getElementById('reportPreview').innerHTML = 
+            '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+    });
+}
+
+function exportReport() {
+    const studentId = document.getElementById('studentSelect').value;
+    const term = document.getElementById('termSelect').value;
+    const academicYear = document.getElementById('academicYear').value;
+    
+    if (!studentId || !term || !academicYear) {
+        alert('Please fill in all fields');
+        return;
+    }
+    
+    // Provide a brief notification that the download is starting
+    showNotification('Preparing your report... download will start shortly.', 'info');
+    
+    // Open in new tab to display inline and prevent IDM hijacking
+    const downloadUrl = `/api/export-report-card?student_id=${studentId}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`;
+    window.open(downloadUrl, '_blank');
+}
+
+function showLoading() {
+    document.getElementById('loadingSpinner').classList.remove('d-none');
+    document.getElementById('reportPreview').innerHTML = '';
+}
+
+function hideLoading() {
+    document.getElementById('loadingSpinner').classList.add('d-none');
+}
+
+function showNotification(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+</script>
+{% endblock %}

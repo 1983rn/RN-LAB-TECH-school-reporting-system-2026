@@ -41,8 +41,8 @@ def migrate_database():
                 old_data = cursor.fetchall()
                 
                 subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
-                           'Chichewa', 'Computer Studies', 'English', 'Geography', 
-                           'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics']
+                           'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+                           'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics']
                 
                 for form_level in [1, 2, 3, 4]:
                     for subject in subjects:

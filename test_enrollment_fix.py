@@ -4,6 +4,7 @@ import sqlite3
 import os
 from termly_report_generator import TermlyReportGenerator
 from school_database import SchoolDatabase
+import re
 
 def test_enrollment_count_fix():
     """Test that report generation shows correct enrollment count for NANJATI"""
@@ -45,4 +46,48 @@ def test_enrollment_count_fix():
     
     # Test pass/fail summary generation with school_id
     try:
-        summary = generator.generate_pass_fail_summary(1, 'Term 1', '2024-2025', school_id)\n        \n        if summary:\n            # Extract total students from summary\n            lines = summary.split('\\n')\n            total_students_line = None\n            for line in lines:\n                if 'Total Students:' in line:\n                    total_students_line = line\n                    break\n            \n            if total_students_line:\n                # Extract number from line like \"Total Students: 91\"\n                import re\n                match = re.search(r'Total Students: (\\d+)', total_students_line)\n                if match:\n                    reported_count = int(match.group(1))\n                    print(f\"Report shows total students: {reported_count}\")\n                    \n                    if reported_count == actual_count:\n                        print(\"✅ SUCCESS: Report shows correct enrollment count!\")\n                        return True\n                    else:\n                        print(f\"❌ MISMATCH: Report shows {reported_count}, but database has {actual_count}\")\n                        return False\n                else:\n                    print(\"❌ Could not extract student count from report\")\n                    return False\n            else:\n                print(\"❌ Could not find 'Total Students' line in report\")\n                return False\n        else:\n            print(\"❌ No summary generated\")\n            return False\n            \n    except Exception as e:\n        print(f\"❌ Error generating summary: {e}\")\n        import traceback\n        traceback.print_exc()\n        return False\n    \n    finally:\n        conn.close()\n\nif __name__ == \"__main__\":\n    print(\"Testing Enrollment Count Fix\")\n    print(\"=\" * 40)\n    \n    success = test_enrollment_count_fix()\n    \n    print(\"\\n\" + \"=\" * 40)\n    if success:\n        print(\"✅ TEST PASSED: Enrollment count is now correct!\")\n        print(\"The report generation will show the accurate number\")\n        print(\"of students (91) for NANJATI Form 1.\")\n    else:\n        print(\"❌ TEST FAILED: Issue still exists\")\n        print(\"The report may still show incorrect enrollment numbers.\")
+        summary = generator.generate_pass_fail_summary(1, 'Term 1', '2024-2025', school_id)
+
+        if not summary:
+            print("No summary generated")
+            return False
+
+        total_students_line = None
+        for line in summary.split('\n'):
+            if 'Total Students:' in line:
+                total_students_line = line
+                break
+
+        if not total_students_line:
+            print("Could not find 'Total Students' line in report")
+            return False
+
+        match = re.search(r'Total Students: (\d+)', total_students_line)
+        if not match:
+            print("Could not extract student count from report")
+            return False
+
+        reported_count = int(match.group(1))
+        print(f"Report shows total students: {reported_count}")
+        return reported_count == actual_count
+
+    except Exception as e:
+        print(f"Error generating summary: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    print("Testing Enrollment Count Fix")
+    print("=" * 40)
+
+    success = test_enrollment_count_fix()
+
+    print("\n" + "=" * 40)
+    if success:
+        print("TEST PASSED: Enrollment count is now correct.")
+    else:
+        print("TEST FAILED: Issue still exists.")

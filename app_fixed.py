@@ -176,8 +176,8 @@ def form_data_entry(form_level):
         return redirect(url_for('index'))
     
     subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
-               'Chichewa', 'Computer Studies', 'English', 'Geography', 
-               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Business Studies', 'Home Economics']
+               'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics']
     
     # Get students for this form
     students = []

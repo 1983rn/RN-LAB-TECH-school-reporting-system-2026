@@ -103,8 +103,8 @@ def test_api_endpoints():
             print("🔑 Testing developer login...")
             login_response = client.post('/api/login', 
                 json={
-                    'username': 'MAKONOKAya',
-                    'password': 'NAMADEYIMKOLOWEKO1949',
+                    'username': os.environ.get('DEVELOPER_USERNAME', 'MAKONOKAya'),
+                    'password': os.environ.get('DEVELOPER_PASSWORD', 'NAMADEYIMKOLOWEKO1949'),
                     'user_type': 'developer'
                 }
             )
@@ -124,7 +124,7 @@ def test_api_endpoints():
             with client.session_transaction() as sess:
                 sess['user_id'] = 'developer'
                 sess['user_type'] = 'developer'
-                sess['username'] = 'MAKONOKAya'
+                sess['username'] = os.environ.get('DEVELOPER_USERNAME', 'MAKONOKAya')
             
             # Test get schools endpoint
             print("📋 Testing /api/developer/schools endpoint...")
@@ -224,7 +224,7 @@ def main():
     print("✅ School management functionality is working correctly")
     print("🌐 You can now use the developer dashboard to add schools")
     print("\n📝 To add a school:")
-    print("1. Login as developer (MAKONOKAya / NAMADEYIMKOLOWEKO1949)")
+    print("1. Login as developer ([REDACTED] / [REDACTED])")
     print("2. Go to Developer Dashboard")
     print("3. Click 'Add School' button")
     print("4. Fill in school details")
