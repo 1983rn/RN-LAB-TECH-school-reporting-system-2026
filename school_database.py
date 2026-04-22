@@ -1810,6 +1810,45 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error getting student rankings: {e}")
             return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
+
+    def get_all_subject_rankings(self, form_level: int, term: str, academic_year: str, school_id: int) -> Dict:
+        """Fetch and calculate rankings for ALL subjects in a form at once. Very high performance."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT subject, student_id, mark
+                    FROM student_marks
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                    ORDER BY subject, mark DESC
+                """, (form_level, term, academic_year, school_id))
+                
+                all_marks = cursor.fetchall()
+                
+                # Dictionary to store positions: { (subject, student_id): "pos/total" }
+                rankings = {}
+                
+                # Group by subject
+                from collections import defaultdict
+                subject_groups = defaultdict(list)
+                for subject, student_id, mark in all_marks:
+                    subject_groups[subject].append((student_id, mark))
+                
+                # Calculate ranks for each subject
+                for subject, marks in subject_groups.items():
+                    total = len(marks)
+                    current_rank = 1
+                    prev_mark = None
+                    for i, (s_id, mark) in enumerate(marks):
+                        if i > 0 and mark != prev_mark:
+                            current_rank = i + 1
+                        rankings[(subject, s_id)] = f"{current_rank}/{total}"
+                        prev_mark = mark
+                
+                return rankings
+        except Exception as e:
+            self.logger.error(f"Error getting all subject rankings: {e}")
+            return {}
     
     def get_top_performers(self, form_level: int, term: str, academic_year: str, limit: int = 10, school_id: int = None) -> List[Dict]:
         """Get top performing students"""

@@ -690,11 +690,29 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             return None
 
     def export_multiple_reports_to_pdf_bytes(self, student_ids: List[int], term: str, academic_year: str, school_id: int):
-        """High-performance batch PDF generation in a single pass."""
+        """High-performance batch PDF generation in a single pass with pre-calculated rankings."""
         if not HAS_REPORTLAB:
             return None
 
         try:
+            # --- CRITICAL OPTIMIZATION: Pre-calculate all rankings ONCE for the whole batch ---
+            print(f"DEBUG [Generator]: Pre-calculating batch rankings for {len(student_ids)} students...")
+            # 1. Get student IDs from the first student to find form level
+            first_student = self.db.get_student_by_id(student_ids[0], school_id)
+            if not first_student:
+                return None
+            form_level = first_student.get('grade_level', 1)
+
+            # 2. Fetch all subject rankings and overall rankings for this form at once
+            subject_rankings = self.db.get_all_subject_rankings(form_level, term, academic_year, school_id)
+            overall_rank_data = self.db.get_student_rankings(form_level, term, academic_year, school_id)
+            
+            # Convert overall rankings to a fast lookup map { name: ranking_dict }
+            rankings_map = {}
+            total_students = overall_rank_data.get('total_students', 0)
+            for r in overall_rank_data.get('rankings', []):
+                rankings_map[r['name']] = r
+
             buffer = io.BytesIO()
             doc = BorderedDocTemplate(
                 buffer, pagesize=A4,
@@ -713,8 +731,11 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             count = 0
             
             for i, s_id in enumerate(student_ids):
-                # Add individual report content
-                if self._add_student_to_story(story, s_id, term, academic_year, school_id):
+                # Add individual report content with pre-calculated rankings
+                if self._add_student_to_story(story, s_id, term, academic_year, school_id,
+                                            subject_rankings=subject_rankings,
+                                            overall_rankings=rankings_map,
+                                            total_students=total_students):
                     # Add page break between students, but not after the last one
                     if i < len(student_ids) - 1:
                         story.append(PageBreak())
@@ -734,8 +755,9 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             print(traceback.format_exc())
             return None
 
-    def _add_student_to_story(self, story: list, student_id: int, term: str, academic_year: str, school_id: int):
-        """Internal helper to add a single student's report content to a story list."""
+    def _add_student_to_story(self, story: list, student_id: int, term: str, academic_year: str, school_id: int,
+                              subject_rankings: dict = None, overall_rankings: dict = None, total_students: int = None):
+        """Internal helper to add a single student's report content to a story list with optional pre-calculated ranks."""
         try:
             # Check if student exists
             student = self.db.get_student_by_id(student_id, school_id)
@@ -795,7 +817,14 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
 
             # --- 3. Student Info ---
             # Calculate position and average FIRST (before table)
-            position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
+            # Use pre-calculated position if available
+            student_full_name = f"{student['first_name']} {student['last_name']}"
+            if overall_rankings and student_full_name in overall_rankings:
+                position_data = overall_rankings[student_full_name]
+                if total_students:
+                    position_data['total_students'] = total_students
+            else:
+                position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
             avg = sum(d['mark'] for d in marks.values()) / len(marks) if marks else 0
             passed_subjects = sum(1 for d in marks.values() if d['mark'] >= (40 if form_level >= 3 else 50))
             english_mark = marks.get('English', {}).get('mark', 0)
@@ -864,7 +893,12 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                 if subject in marks:
                     m = marks[subject]['mark']
                     g = self.db.calculate_grade(m, form_level, school_id)
-                    pos = self.db.get_subject_position(student_id, subject, term, academic_year, form_level, school_id)
+                    
+                    # Use pre-calculated subject rank if available
+                    if subject_rankings and (subject, student_id) in subject_rankings:
+                        pos = subject_rankings[(subject, student_id)]
+                    else:
+                        pos = self.db.get_subject_position(student_id, subject, term, academic_year, form_level, school_id)
                     # Use dynamic teacher comment from database/settings
                     comment = self.db.get_teacher_comment(g, form_level, school_id)
                     teacher = teachers_map.get(subject, '')
