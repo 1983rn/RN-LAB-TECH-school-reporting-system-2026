@@ -1334,38 +1334,16 @@ def api_print_all_reports():
                 'message': f'No students with marks found for Form {form_level}, {term} {academic_year}'
             }), 404
 
-        successful_reports = 0
+        # Optimized: Generate all reports in a single PDF building pass
+        student_ids = [s.get('student_id') for s in students]
+        combined_pdf_bytes = generator.export_multiple_reports_to_pdf_bytes(student_ids, term, academic_year, school_id)
 
-        # Create the combined PDF directly in memory (avoid temp file I/O).
-        writer = PdfWriter()
-
-        # Generate and append each student's PDF.
-        for student in students:
-            try:
-                pdf_bytes = generator.export_report_to_pdf_bytes(student['student_id'], term, academic_year, school_id)
-
-                if pdf_bytes and pdf_bytes.startswith(b'%PDF-'):
-                    reader = PdfReader(io.BytesIO(pdf_bytes))
-                    for page in reader.pages:
-                        writer.add_page(page)
-                    successful_reports += 1
-                else:
-                    app.logger.warning(f"No PDF generated for student {student['first_name']} {student['last_name']}")
-            except Exception as e:
-                app.logger.error(f"Error generating report for {student['first_name']} {student['last_name']}: {e}")
-                continue
-
-        if successful_reports == 0:
+        if not combined_pdf_bytes:
             return jsonify({
                 'success': False,
                 'message': 'No report cards could be generated for any students'
             }), 500
 
-        output_buffer = io.BytesIO()
-        writer.write(output_buffer)
-        output_buffer.seek(0)
-        combined_pdf_bytes = output_buffer.read()
-        
         # Create response
         response = make_response(combined_pdf_bytes)
         response.headers['Content-Type'] = 'application/pdf'
@@ -1374,7 +1352,7 @@ def api_print_all_reports():
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
         
-        app.logger.info(f"Generated combined PDF for Form {form_level}, {term} {academic_year}: {successful_reports}/{len(students)} reports")
+        app.logger.info(f"Generated optimized combined PDF for Form {form_level}, {term} {academic_year}: {len(student_ids)} reports")
         
         return response
         

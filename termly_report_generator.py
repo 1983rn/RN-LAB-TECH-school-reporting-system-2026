@@ -26,7 +26,7 @@ from school_database import SchoolDatabase, DEFAULT_JUNIOR_GRADING, DEFAULT_SENI
 # PDF Generation Imports
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame, PageBreak
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -655,40 +655,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             print("ERROR: ReportLab library not found. PDF generation aborted.")
             return None
 
-        # Check if student exists and belongs to school
-        student = self.db.get_student_by_id(student_id, school_id)
-        if not student:
-            print(f"DEBUG [Generator]: Student {student_id} not found or unauthorized for school {school_id}")
-            return None
-
-        if not school_id:
-            school_id = student.get('school_id')
-
-        student_name = f"{student['first_name']}_{student['last_name']}"
-        print(f"DEBUG [Generator]: Preparing report for {student_name} (ID: {student_id})")
-
-        marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
-        if not marks:
-            print(f"DEBUG [Generator]: No marks found for {student_name}")
-            return None
-
         try:
-            # --- Pull ALL settings from DB for this school ---
-            settings = self.db.get_school_settings(school_id)
-            school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
-            school_address = settings.get('school_address') or self.school_address or ''
-            school_phone = settings.get('school_phone') or self.school_phone or ''
-            school_email = settings.get('school_email') or self.school_email or ''
-            boarding_fee = settings.get('boarding_fee') or self.boarding_fee or ''
-            next_term_begins = settings.get('next_term_begins') or 'To be announced'
-            boys_uniform = settings.get('boys_uniform') or self.boys_uniform or ''
-            girls_uniform = settings.get('girls_uniform') or self.girls_uniform or ''
-
-            form_level = student.get('grade_level', 1)
-
-            # Pull subject teachers for this form and school
-            teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
-
             # Write PDF into memory buffer
             buffer = io.BytesIO()
             doc = BorderedDocTemplate(
@@ -704,9 +671,96 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
             doc.addPageTemplates([template])
 
-            styles = getSampleStyleSheet()
             story = []
+            
+            # Use the optimized story builder
+            success = self._add_student_to_story(story, student_id, term, academic_year, school_id)
+            if not success:
+                return None
 
+            print(f"DEBUG [Generator]: Successfully built PDF story for student {student_id}")
+            doc.build(story)
+            buffer.seek(0)
+            return buffer
+
+        except Exception as e:
+            import traceback
+            print(f"CRITICAL Error creating PDF for student {student_id}: {e}")
+            print(traceback.format_exc())
+            return None
+
+    def export_multiple_reports_to_pdf_bytes(self, student_ids: List[int], term: str, academic_year: str, school_id: int):
+        """High-performance batch PDF generation in a single pass."""
+        if not HAS_REPORTLAB:
+            return None
+
+        try:
+            buffer = io.BytesIO()
+            doc = BorderedDocTemplate(
+                buffer, pagesize=A4,
+                topMargin=0.8*inch, bottomMargin=0.4*inch,
+                leftMargin=0.6*inch, rightMargin=0.6*inch
+            )
+            frame = Frame(
+                0.6*inch, 0.4*inch,
+                A4[0]-1.2*inch, A4[1]-1.2*inch,
+                leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0
+            )
+            template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
+            doc.addPageTemplates([template])
+
+            story = []
+            count = 0
+            
+            for i, s_id in enumerate(student_ids):
+                # Add individual report content
+                if self._add_student_to_story(story, s_id, term, academic_year, school_id):
+                    # Add page break between students, but not after the last one
+                    if i < len(student_ids) - 1:
+                        story.append(PageBreak())
+                    count += 1
+
+            if count == 0:
+                return None
+
+            print(f"DEBUG [Generator]: Building combined PDF for {count} students...")
+            doc.build(story)
+            buffer.seek(0)
+            return buffer.read()
+
+        except Exception as e:
+            import traceback
+            print(f"CRITICAL Error in batch PDF generation: {e}")
+            print(traceback.format_exc())
+            return None
+
+    def _add_student_to_story(self, story: list, student_id: int, term: str, academic_year: str, school_id: int):
+        """Internal helper to add a single student's report content to a story list."""
+        try:
+            # Check if student exists
+            student = self.db.get_student_by_id(student_id, school_id)
+            if not student:
+                return False
+
+            marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
+            if not marks:
+                return False
+
+            settings = self.db.get_school_settings(school_id)
+            school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
+            school_address = settings.get('school_address') or self.school_address or ''
+            school_phone = settings.get('school_phone') or self.school_phone or ''
+            school_email = settings.get('school_email') or self.school_email or ''
+            boarding_fee = settings.get('boarding_fee') or self.boarding_fee or ''
+            next_term_begins = settings.get('next_term_begins') or 'To be announced'
+            boys_uniform = settings.get('boys_uniform') or self.boys_uniform or ''
+            girls_uniform = settings.get('girls_uniform') or self.girls_uniform or ''
+
+            form_level = student.get('grade_level', 1)
+            teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
+            
+            styles = getSampleStyleSheet()
+            
             # --- 1. Logo ---
             logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Malawi Government logo.png')
             if os.path.exists(logo_path):
