@@ -6,7 +6,8 @@ Flask-based web interface for school report generation
 Created by: RN_LAB_TECH
 """
 
-from flask import Flask, render_template, request, jsonify, send_file, flash, redirect, url_for, session, make_response  # type: ignore[import-not-found]
+from flask import Flask, render_template, request, jsonify, send_file, flash, redirect, url_for, session, make_response
+from werkzeug.utils import secure_filename
 import os
 import sys
 import traceback
@@ -16,7 +17,8 @@ import hashlib
 import zipfile
 import io
 import secrets
-import sqlite3
+# import sqlite3 # No longer needed, using PostgreSQL via psycopg2
+import pandas as pd
 
 # Add current directory to path 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +30,17 @@ from school_database import SchoolDatabase
 from multi_user_manager import SchoolUserManager
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
+
+# Signature Upload Configuration
+UPLOAD_FOLDER = os.path.join(current_dir, 'static', 'uploads', 'signatures')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 # Use environment-provided SECRET_KEY in production
 app.secret_key = os.environ.get('SECRET_KEY')
 if not app.secret_key:
@@ -83,18 +96,21 @@ def show_error_message(title: str, message: str) -> None:
         # running from a terminal or double-clicking the .bat can see the error.
         print('\n' + title)
         print(message)
-        try:
-            input('Press Enter to exit...')
-        except Exception as e:
-            print(f"Error in input handling: {e}")
+        if is_console:
+            try:
+                input('Press Enter to exit...')
+            except Exception as e:
+                print(f"Error in input handling: {e}")
 
 
 import bcrypt
 
-# Developer credentials - store hashed password
-DEVELOPER_USERNAME = 'MAKONOKAya'
-# Hashed version of 'NAMADEYIMKOLOWEKO1949'
-DEVELOPER_PASSWORD_HASH = '$2b$12$/UCr8jdGrSXBlinn0nPuXuku5QkIfJ1YB78Z31NHxVYgWtxKhKZty'
+# Developer credentials - use environment variables or secure defaults
+# Note: In production, set DEVELOPER_USERNAME and DEVELOPER_PASSWORD_HASH env vars
+DEVELOPER_USERNAME = os.environ.get('DEVELOPER_USERNAME', 'MAKONOKAya')
+# Default hash for NAMADEYIMKOLOWEKO1949 (can be overridden via environment)
+DEVELOPER_PASSWORD_HASH = os.environ.get('DEVELOPER_PASSWORD_HASH', 
+    '$2b$12$/UCr8jdGrSXBlinn0nPuXuku5QkIfJ1YB78Z31NHxVYgWtxKhKZty')
 
 def hash_password(password):
     # bcrypt is a binary extension; some linters/Pylance can't infer attributes.
@@ -144,27 +160,28 @@ def inject_school_settings():
     """Make school settings available to all templates"""
     school_settings = {}
     try:
-        if session.get('user_type') == 'school':
+        user_type = session.get('user_type')
+        school_id = None
+        
+        if user_type == 'school':
             school_id = session.get('user_id')
-            school_name_from_session = session.get('school_name', '')
+        elif user_type == 'school_user':
+            school_id = session.get('school_id')
             
-            if school_id:
-                # Try to get settings from database if db is available
-                try:
-                    # Access db from global scope - will raise NameError if not defined
-                    school_settings = db.get_school_settings(school_id)
-                    # Ensure school_name exists in settings
-                    if not school_settings.get('school_name') and school_name_from_session:
-                        school_settings['school_name'] = school_name_from_session
-                except (NameError, AttributeError) as e:
-                    # db not initialized yet, use session data
-                    school_settings = {'school_name': school_name_from_session}
-                except Exception as e:
-                    # Other error accessing db, use session data
-                    school_settings = {'school_name': school_name_from_session}
-            else:
-                # No school_id, use session data
+        if school_id:
+            school_name_from_session = session.get('school_name', '')
+            # Try to get settings from database if db is available
+            try:
+                # Access db from global scope
+                school_settings = db.get_school_settings(school_id)
+                # Ensure school_name exists in settings
+                if not school_settings.get('school_name') and school_name_from_session:
+                    school_settings['school_name'] = school_name_from_session
+            except (NameError, AttributeError, Exception) as e:
+                # Fallback to session data
                 school_settings = {'school_name': school_name_from_session}
+        else:
+            school_settings = {'school_name': session.get('school_name', '')}
     except Exception as e:
         # Always return a dict, even if there's an error
         school_settings = {'school_name': session.get('school_name', '')}
@@ -193,7 +210,7 @@ def before_request():
                 'success': False,
                 'message': 'Authentication required. Please login first.',
                 'redirect': '/login'
-            }), 401
+            }), 403
         
         # Check subscription status for schools
         if session.get('user_type') == 'school' and not check_subscription_status():
@@ -222,15 +239,15 @@ analyzer = None
 
 try:
     db = SchoolDatabase()
-    user_manager = SchoolUserManager(db.db_path)
-    user_manager.create_school_users_table()  # Create user tables if they don't exist
+    user_manager = SchoolUserManager(db)
+    user_manager.create_school_users_table()  # Verifies tables exist in Postgres
     generator = TermlyReportGenerator(
-        school_name="DEMO SECONDARY SCHOOL",
-        school_address="P.O. Box 123, Lilongwe, Malawi",
-        school_phone="+265 1 234 5678",
-        school_email="demo@school.edu.mw"
+        school_name="[ENTER SCHOOL NAME]",
+        school_address="[ENTER ADDRESS]",
+        school_phone="[ENTER PHONE]",
+        school_email="[ENTER EMAIL]"
     )
-    analyzer = PerformanceAnalyzer("DEMO SECONDARY SCHOOL")
+    analyzer = PerformanceAnalyzer("[ENTER SCHOOL NAME]")
     print("SUCCESS: System components initialized successfully")
 except Exception as e:
     # Record the initialization failure so the CLI can report it cleanly
@@ -238,6 +255,11 @@ except Exception as e:
     import traceback
     traceback.print_exc()
     INIT_OK = False
+    
+    # If we are in production, re-raise the exception to prevent the app from starting in a broken state
+    if os.environ.get('RENDER') or os.environ.get('FLASK_ENV') == 'production':
+        raise
+        
     # Use the user-friendly display routine when appropriate so double-clicking
     # the script on Windows doesn't flash and close without giving feedback.
     try:
@@ -328,20 +350,23 @@ def form_data_entry_multi_user(form_level):
         if not selected_academic_year and academic_years:
             selected_academic_year = academic_years[0]
         
-        # Get students for this form and school
+        # Get students enrolled in this form, term, and school - STRICT TERM ISOLATION
         try:
-            students = db.get_students_by_grade(form_level, school_id)
+            students = db.get_students_enrolled_in_term(form_level, selected_term, selected_academic_year, school_id)
+            
+            # ENFORCE: Always show empty list for new terms/academic years
+            # No fallback to showing all students - term-specific enrollment required
+            if not students:
+                print(f"NEW TERM/YEAR: No students enrolled in Form {form_level} for {selected_term} {selected_academic_year}")
+                print("Students must be manually enrolled or uploaded for this term/academic year")
             
             # Check if this is a new academic year/term by looking for existing marks
             if selected_term and selected_academic_year:
                 has_marks = db.check_marks_exist_for_period(
                     form_level, selected_term, selected_academic_year, school_id
                 )
-                # If no marks exist for the selected period *and* there are no students enrolled,
-                # keep students empty and log; otherwise keep enrolled students visible so data-entry
-                # users can enter marks for the new term.
                 if not has_marks and not students:
-                    print(f"New academic year/term detected: {selected_academic_year} {selected_term} - no students enrolled yet")
+                    print(f"New academic year/term confirmed: {selected_academic_year} {selected_term} - no students enrolled yet")
             
         except Exception as e:
             print(f"Error getting students: {e}")
@@ -540,7 +565,7 @@ def api_user_heartbeat():
     """Update user activity heartbeat"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         data = request.get_json()
         user_id = data.get('user_id')
@@ -563,7 +588,7 @@ def api_check_form_conflicts():
     """Check for form access conflicts"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         data = request.get_json()
         user_id = data.get('user_id')
@@ -587,10 +612,10 @@ def api_user_activity(user_id):
     """Get user activity log"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         # Get recent activities for the user
-        with sqlite3.connect(db.db_path) as conn:
+        with db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT activity_type, form_level, details, timestamp
@@ -622,7 +647,7 @@ def api_check_form_status():
     """Check status of all forms for conflicts"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         # Get active conflicts for all forms
         conflicts = []
@@ -647,7 +672,7 @@ def api_delete_student():
     """Delete a student and all their marks"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         data = request.get_json()
         student_id = data.get('student_id')
@@ -662,7 +687,7 @@ def api_delete_student():
             return jsonify({'success': False, 'message': 'School not found'}), 400
         
         # Verify student belongs to this school and form
-        student = db.get_student_by_id(student_id)
+        student = db.get_student_by_id(student_id, school_id)
         if not student or student.get('school_id') != school_id:
             return jsonify({'success': False, 'message': 'Student not found'}), 404
         
@@ -694,7 +719,7 @@ def api_update_student_name():
     """Update a student's name"""
     try:
         if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+            return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
         data = request.get_json()
         student_id = data.get('student_id')
@@ -711,7 +736,7 @@ def api_update_student_name():
             return jsonify({'success': False, 'message': 'School not found'}), 400
         
         # Verify student belongs to this school and form
-        student = db.get_student_by_id(student_id)
+        student = db.get_student_by_id(student_id, school_id)
         if not student or student.get('school_id') != school_id:
             return jsonify({'success': False, 'message': 'Student not found'}), 404
         
@@ -750,8 +775,8 @@ def form_data_entry(form_level):
     
     # Default subject list for all forms (1-4)
     default_subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Business Studies', 'Chemistry', 
-               'Chichewa', 'Computer Studies', 'English', 'Geography', 
-               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Home Economics']
+               'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+               'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Home Economics']
 
     # Merge with any per-school subject entries from subject_teachers to ensure subjects are not accidentally omitted
     try:
@@ -766,10 +791,10 @@ def form_data_entry(form_level):
     else:
         subjects = merged_subjects
     
-    # Get terms and academic years from settings or define defaults
+    # Get terms and academic years
     settings = db.get_school_settings(school_id) if hasattr(db, 'get_school_settings') else {}
-    terms = settings.get('terms') or ['Term 1', 'Term 2', 'Term 3']
-    academic_years = settings.get('academic_years') or [f'{y}-{y+1}' for y in range(2025, 2036)]
+    terms = ['Term 1', 'Term 2', 'Term 3']
+    academic_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
     
     # Get selected term and academic year from settings (these are set in the settings page)
     selected_term = settings.get('selected_term', '')
@@ -781,20 +806,23 @@ def form_data_entry(form_level):
     if not selected_academic_year and academic_years:
         selected_academic_year = academic_years[0]
 
-    # Get students for this form and school
+    # Get students enrolled in this form, term, and school - STRICT TERM ISOLATION
     try:
-        students = db.get_students_by_grade(form_level, school_id)
+        students = db.get_students_enrolled_in_term(form_level, selected_term, selected_academic_year, school_id)
+        
+        # ENFORCE: Always show empty list for new terms/academic years
+        # No fallback to showing all students - term-specific enrollment required
+        if not students:
+            print(f"NEW TERM/YEAR: No students enrolled in Form {form_level} for {selected_term} {selected_academic_year}")
+            print("Students must be manually enrolled or uploaded for this term/academic year")
         
         # Check if this is a new academic year/term by looking for existing marks
         if selected_term and selected_academic_year:
             has_marks = db.check_marks_exist_for_period(
                 form_level, selected_term, selected_academic_year, school_id
             )
-            # If no marks exist for the selected period *and* there are no students enrolled,
-            # keep students empty and log; otherwise keep enrolled students visible so data-entry
-            # users can enter marks for the new term.
             if not has_marks and not students:
-                print(f"New academic year/term detected: {selected_academic_year} {selected_term} - no students enrolled yet")
+                print(f"New academic year/term confirmed: {selected_academic_year} {selected_term} - no students enrolled yet")
         
     except Exception as e:
         print(f"Error getting students: {e}")
@@ -827,9 +855,9 @@ def ranking_analysis():
     # Provide available academic years and current selection so the page can render selects
     settings = db.get_school_settings(school_id)
 
-    # Available lists (fallback to defaults)
-    available_years = settings.get('academic_years') or [f'{y}-{y+1}' for y in range(2025, 2036)]
-    available_terms = settings.get('terms') or ['Term 1', 'Term 2', 'Term 3']
+    # Available lists
+    available_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
+    available_terms = ['Term 1', 'Term 2', 'Term 3']
 
     # Use selected values from settings (set in settings page), fallback to first available if not set
     selected_academic_year = settings.get('selected_academic_year', '')
@@ -855,8 +883,8 @@ def settings():
     
     # Get current settings for this school
     settings_obj = db.get_school_settings(school_id)
-    terms = settings_obj.get('terms') or ['Term 1', 'Term 2', 'Term 3']
-    academic_years = settings_obj.get('academic_years') or [f'{y}-{y+1}' for y in range(2025, 2036)]
+    terms = ['Term 1', 'Term 2', 'Term 3']
+    academic_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
 
     # Provide selectable ranges for the UI
     available_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
@@ -904,18 +932,30 @@ def api_save_student_marks():
         academic_year = data['academic_year']
         marks = data['marks']  # Dictionary of subject: mark
         
+        app.logger.info(f"DEBUG: Saving marks for student {student_id} (School: {school_id})")
+        app.logger.info(f"DEBUG: Marks data to save: {marks}")
+        
         # Save marks to database with school_id
         for subject, mark in marks.items():
             if mark is not None and str(mark).strip():
                 mark_value = int(str(mark).strip())
+                
+                # Fetch old mark for logging
+                old_marks = db.get_student_marks(student_id, term, academic_year, school_id)
+                old_mark = old_marks.get(subject, {}).get('mark', 'None')
+                app.logger.info(f"DEBUG: Before Update: old_mark for {subject} = {old_mark}")
+                
                 db.save_student_mark(student_id, subject, mark_value, term, academic_year, form_level, school_id)
+                app.logger.info(f"DEBUG: After Update: new_mark for {subject} = {mark_value}")
         
+        app.logger.info(f"Marks updated successfully for student: {student_id}")
         return jsonify({
             'success': True,
             'message': 'Marks saved successfully'
         })
         
     except Exception as e:
+        app.logger.error(f"Error saving marks: {str(e)}")
         return jsonify({
             'success': False,
             'message': f'Error saving marks: {str(e)}'
@@ -933,19 +973,37 @@ def api_load_student_marks():
         term = request.args.get('term')
         academic_year = request.args.get('academic_year')
         
+        app.logger.info(f"DEBUG: Loading marks for student {student_id} (School: {school_id}, Term: {term}, Year: {academic_year})")
+        
         marks = db.get_student_marks(student_id, term, academic_year, school_id)
         
         # Convert to format expected by frontend
         marks_data = {}
         for subject, data in marks.items():
             marks_data[subject] = data['mark']
+            
+        app.logger.info(f"DEBUG: Retrieved marks from database: {marks_data} for student {student_id}")
         
-        return jsonify({
+        response = make_response(jsonify({
             'success': True,
-            'marks': marks_data
-        })
+            'marks': marks_data,
+            'debug_info': {
+                'student_id': student_id,
+                'school_id': school_id,
+                'term': term,
+                'academic_year': academic_year,
+                'total_marks': len(marks_data)
+            }
+        }))
+        # Strong cache control to prevent browser caching
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0, private'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '-1'
+        response.headers['Vary'] = 'Cookie, Authorization'
+        return response
         
     except Exception as e:
+        app.logger.error(f"Error loading marks: {str(e)}")
         return jsonify({
             'success': False,
             'message': f'Error loading marks: {str(e)}'
@@ -964,6 +1022,102 @@ def api_get_subject_teachers():
         return jsonify({'success': True, 'teachers': teachers})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/clear-form-data', methods=['POST'])
+def api_clear_form_data():
+    """Clear all student names and marks for a specific form, term, and academic year"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+
+        data = request.get_json()
+        form_level = int(data.get('form_level'))
+        term = (data.get('term') or '').strip()
+        academic_year = (data.get('academic_year') or '').strip()
+        
+        if not all([form_level, term, academic_year]):
+            return jsonify({'success': False, 'message': 'Missing required parameters'}), 400
+
+        app.logger.info(f"Clearing data request: Form {form_level}, {term} {academic_year}, School {school_id}")
+        
+        # Get counts before clearing for confirmation
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Count students enrolled in this form/term/year
+            cursor.execute("""
+                SELECT COUNT(*) FROM student_term_enrollment 
+                WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+            """, (form_level, term, academic_year, school_id))
+            student_count = cursor.fetchone()[0]
+            
+            # Count marks directly by the same dimensions used during upload/save.
+            cursor.execute("""
+                SELECT COUNT(*) FROM student_marks
+                WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+            """, (form_level, term, academic_year, school_id))
+            marks_count = cursor.fetchone()[0]
+        
+        if student_count == 0 and marks_count == 0:
+            return jsonify({
+                'success': False, 
+                'message': 'No data found to clear for this form and term',
+                'student_count': 0,
+                'marks_count': 0
+            })
+        
+        # Clear the data
+        cleared_students = 0
+        cleared_marks = 0
+        
+        try:
+            # First, clear all marks for students in this form/term/year
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Delete marks directly by form/term/year/school.
+                # This clears orphaned marks even when enrollment rows are missing.
+                cursor.execute("""
+                    DELETE FROM student_marks 
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (form_level, term, academic_year, school_id))
+                cleared_marks = cursor.rowcount
+                
+                # Delete student enrollments for this form/term/year
+                cursor.execute("""
+                    DELETE FROM student_term_enrollment 
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (form_level, term, academic_year, school_id))
+                cleared_students = cursor.rowcount
+                
+                conn.commit()
+                
+            app.logger.info(f"Cleared data: {cleared_students} students, {cleared_marks} marks")
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully cleared data for Form {form_level}, {term} {academic_year}',
+                'cleared_students': cleared_students,
+                'cleared_marks': cleared_marks,
+                'form_level': form_level,
+                'term': term,
+                'academic_year': academic_year
+            })
+            
+        except Exception as e:
+            app.logger.error(f"Error clearing data: {str(e)}")
+            return jsonify({
+                'success': False,
+                'message': f'Error clearing data: {str(e)}'
+            }), 500
+
+    except Exception as e:
+        app.logger.error(f"Error in clear form data API: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'Error processing request: {str(e)}'
+        }), 500
 
 @app.route('/api/update-subject-teacher', methods=['POST'])
 def api_update_subject_teacher():
@@ -1061,9 +1215,8 @@ def api_export_report_card():
         student_id = int(student_id_raw)
         
         print(f"DEBUG [PDF Export]: Request for student_id={student_id}, term='{term}', year='{academic_year}', school_id={school_id}")
-        
-        # Check if student exists
-        student = db.get_student_by_id(student_id)
+
+        student = db.get_student_by_id(student_id, school_id)
         if not student:
             print(f"DEBUG [PDF Export]: Student ID {student_id} not found in database")
             return jsonify({'success': False, 'message': f'Student with ID {student_id} not found'}), 404
@@ -1075,12 +1228,19 @@ def api_export_report_card():
 
         print(f"DEBUG [PDF Export]: Generating report for learner: {student['first_name']} {student['last_name']} (ID: {student_id})")
         
-        marks = db.get_student_marks(student_id, term, academic_year, school_id)
-        if not marks:
+        # Use a lightweight existence check to avoid loading full marks twice.
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM student_marks
+                WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                LIMIT 1
+            """, (student_id, term, academic_year, school_id))
+            has_marks = cursor.fetchone() is not None
+
+        if not has_marks:
             print(f"DEBUG [PDF Export]: No marks found for student {student_id} in {term} {academic_year}")
             return jsonify({'success': False, 'message': 'No marks found for this student'}), 404
-        
-        print(f"DEBUG [PDF Export]: Found {len(marks)} subjects for {student['first_name']} {student['last_name']}")
         
         pdf_bytes = generator.export_report_to_pdf_bytes(student_id, term, academic_year, school_id)
         
@@ -1099,7 +1259,7 @@ def api_export_report_card():
             
             response = make_response(pdf_bytes)
             response.headers['Content-Type'] = 'application/pdf'
-            response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
             return response
         else:
             print(f"DEBUG [PDF Export]: PDF generation returned invalid or empty content for student {student_id}")
@@ -1119,7 +1279,7 @@ def api_export_report_card():
 
 @app.route('/api/print-all-reports')
 def api_print_all_reports():
-    """Generate and download all report cards for a form as ZIP"""
+    """Generate and download all report cards for a form as a single combined PDF"""
     try:
         school_id = get_current_school_id()
         if not school_id:
@@ -1129,33 +1289,97 @@ def api_print_all_reports():
         term = request.args.get('term', 'Term 1')
         academic_year = request.args.get('academic_year', '2024-2025')
         
-        students = db.get_students_by_grade(form_level, school_id)
+        # Get students enrolled in this term/year (not all students by grade)
+        students = db.get_students_enrolled_in_term(form_level, term, academic_year, school_id)
         if not students:
             return jsonify({
                 'success': False,
-                'message': f'No students found for Form {form_level}'
+                'message': f'No students found for Form {form_level}, {term} {academic_year}'
             }), 404
         
-        mem_zip = io.BytesIO()
-        with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for student in students:
-                try:
-                    pdf_bytes = generator.export_report_to_pdf_bytes(student['student_id'], term, academic_year, school_id)
-                    if pdf_bytes:
-                        filename = f"{student['first_name']}_{student['last_name']}_Report_{term.replace(' ','_')}_{academic_year.replace('-','_')}.pdf"
-                        zf.writestr(filename, pdf_bytes)
-                except Exception as e:
-                    print(f"Error generating PDF for {student['first_name']} {student['last_name']}: {e}")
-                    continue
+        # Import PyPDF2 for PDF concatenation
+        try:
+            from PyPDF2 import PdfReader, PdfWriter
+        except ImportError:
+            # Fallback to pypdf if PyPDF2 is not available
+            try:
+                from pypdf import PdfReader, PdfWriter
+            except ImportError:
+                return jsonify({
+                    'success': False,
+                    'message': 'PDF library not available. Please install PyPDF2 or pypdf.'
+                }), 500
         
-        mem_zip.seek(0)
+        # Build a set of students that actually have marks for this period.
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT student_id
+                FROM student_marks
+                WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+            """, (form_level, term, academic_year, school_id))
+            students_with_marks = {row[0] for row in cursor.fetchall()}
+
+        if not students_with_marks:
+            return jsonify({
+                'success': False,
+                'message': f'No marks found for Form {form_level}, {term} {academic_year}'
+            }), 404
+
+        # Keep existing student ordering but only generate reports for students with marks.
+        students = [s for s in students if s.get('student_id') in students_with_marks]
+        if not students:
+            return jsonify({
+                'success': False,
+                'message': f'No students with marks found for Form {form_level}, {term} {academic_year}'
+            }), 404
+
+        successful_reports = 0
+
+        # Create the combined PDF directly in memory (avoid temp file I/O).
+        writer = PdfWriter()
+
+        # Generate and append each student's PDF.
+        for student in students:
+            try:
+                pdf_bytes = generator.export_report_to_pdf_bytes(student['student_id'], term, academic_year, school_id)
+
+                if pdf_bytes and pdf_bytes.startswith(b'%PDF-'):
+                    reader = PdfReader(io.BytesIO(pdf_bytes))
+                    for page in reader.pages:
+                        writer.add_page(page)
+                    successful_reports += 1
+                else:
+                    app.logger.warning(f"No PDF generated for student {student['first_name']} {student['last_name']}")
+            except Exception as e:
+                app.logger.error(f"Error generating report for {student['first_name']} {student['last_name']}: {e}")
+                continue
+
+        if successful_reports == 0:
+            return jsonify({
+                'success': False,
+                'message': 'No report cards could be generated for any students'
+            }), 500
+
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        output_buffer.seek(0)
+        combined_pdf_bytes = output_buffer.read()
         
-        response = make_response(mem_zip.read())
-        response.headers['Content-Type'] = 'application/zip'
-        response.headers['Content-Disposition'] = f'attachment; filename="Form_{form_level}_Reports_{term.replace(" ","_")}_{academic_year.replace("-","_")}.zip"'
+        # Create response
+        response = make_response(combined_pdf_bytes)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'inline; filename="Form_{form_level}_Report_Cards_{term.replace(" ","_")}_{academic_year.replace("-","_")}.pdf"'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        
+        app.logger.info(f"Generated combined PDF for Form {form_level}, {term} {academic_year}: {successful_reports}/{len(students)} reports")
+        
         return response
         
     except Exception as e:
+        app.logger.error(f"Error generating combined PDF reports: {str(e)}")
         return jsonify({
             'success': False,
             'message': f'Error generating reports: {str(e)}'
@@ -1269,16 +1493,28 @@ def api_get_rankings_by_form(form_level):
             return jsonify({'success': False, 'message': 'School authentication required'}), 403
         
         term = request.args.get('term', 'Term 1')
-        academic_year = request.args.get('academic_year', '2024-2025')
+        academic_year = request.args.get('academic_year', '2025-2026')
         
         result = db.get_student_rankings(form_level, term, academic_year, school_id)
         
         # Extract rankings array from result dict
         rankings_array = result.get('rankings', []) if isinstance(result, dict) else result
         
+        # If no rankings found for current school, provide helpful message
+        if not rankings_array:
+            return jsonify({
+                'success': True,
+                'rankings': [],
+                'message': f'No ranking data found for Form {form_level}, {term}, {academic_year}. Please ensure marks have been entered for this period.',
+                'total_students': result.get('total_students', 0) if isinstance(result, dict) else 0,
+                'students_with_marks': result.get('students_with_marks', 0) if isinstance(result, dict) else 0
+            })
+        
         return jsonify({
             'success': True,
-            'rankings': rankings_array
+            'rankings': rankings_array,
+            'total_students': result.get('total_students', 0) if isinstance(result, dict) else len(rankings_array),
+            'students_with_marks': result.get('students_with_marks', 0) if isinstance(result, dict) else len(rankings_array)
         })
         
     except Exception as e:
@@ -1296,7 +1532,7 @@ def api_get_top_performers_by_category(form_level, category):
             return jsonify({'success': False, 'message': 'School authentication required'}), 403
         
         term = request.args.get('term', 'Term 1')
-        academic_year = request.args.get('academic_year', '2024-2025')
+        academic_year = request.args.get('academic_year', '2025-2026')
         
         performers = db.get_top_performers_by_category(category, form_level, term, academic_year, school_id)
         
@@ -1323,7 +1559,8 @@ def api_update_student():
             'last_name': data.get('last_name')
         }
         
-        success = db.update_student(student_id, update_data)
+        school_id = get_current_school_id()
+        success = db.update_student(student_id, update_data, school_id)
         
         if success:
             return jsonify({
@@ -1360,6 +1597,12 @@ def api_add_student():
         
         student_id = db.add_student(student_data, school_id)
         
+        # Also enroll the student in the current term/year
+        term = data.get('term')
+        academic_year = data.get('academic_year')
+        if term and academic_year:
+            db.enroll_student_in_term(student_id, term, academic_year, data['form_level'], school_id)
+        
         return jsonify({
             'success': True,
             'message': 'Student added successfully',
@@ -1370,6 +1613,195 @@ def api_add_student():
         return jsonify({
             'success': False,
             'message': f'Error adding student: {str(e)}'
+        })
+
+
+@app.route('/api/upload-students-excel', methods=['POST'])
+def api_upload_students_excel():
+    """Upload students via Excel file"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+        
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'message': 'No file part'}), 400
+        
+        file = request.files['file']
+        form_level = request.form.get('form_level')
+        
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'No selected file'}), 400
+        
+        if not form_level:
+            return jsonify({'success': False, 'message': 'Form level is required'}), 400
+        
+        form_level = int(form_level)
+
+        # Resolve upload period early so duplicates/use cases are scoped consistently.
+        term = (request.form.get('term') or '').strip()
+        academic_year = (request.form.get('academic_year') or '').strip()
+
+        if not term or not academic_year:
+            settings = db.get_school_settings(school_id)
+            term = (term or settings.get('selected_term') or '').strip()
+            academic_year = (academic_year or settings.get('selected_academic_year') or '').strip()
+
+        if not term or not academic_year:
+            return jsonify({
+                'success': False,
+                'message': 'Term and academic year are required for Excel upload.'
+            }), 400
+        
+        if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+            # Read Excel file
+            df = pd.read_excel(file)
+            
+            # Normalize column names (strip whitespace and handle case)
+            df.columns = [str(col).strip() for col in df.columns]
+            
+            # Required columns
+            required_columns = ['First Name', 'Last Name']
+            
+            # Check if required columns exist (flexible matching)
+            found_columns = {}
+            for req in required_columns:
+                # Try exact, case-insensitive, no-space, underscore
+                req_normalized = req.lower().replace(' ', '')
+                for col in df.columns:
+                    col_normalized = str(col).lower().replace(' ', '').replace('_', '')
+                    if col_normalized == req_normalized:
+                        found_columns[req] = col
+                        break
+            
+            if len(found_columns) < len(required_columns):
+                missing = [req for req in required_columns if req not in found_columns]
+                return jsonify({
+                    'success': False, 
+                    'message': f'Required columns not found: {", ".join(missing)}. Please ensure your Excel file has "First Name" and "Last Name" columns.'
+                }), 400
+            
+            # Find subject columns
+            subject_columns = {}
+            default_subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Business Studies', 'Chemistry', 'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 'History', 'Home Economics', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing']
+            
+            for subject in default_subjects:
+                subj_normalized = subject.lower().replace(' ', '').replace('/', '').replace('&', '')
+                for col in df.columns:
+                    col_normalized = str(col).lower().replace(' ', '').replace('/', '').replace('&', '').replace('_', '')
+                    if col_normalized == subj_normalized:
+                        subject_columns[subject] = col
+                        break
+            
+            # Check duplicates only within the selected period and form.
+            # Data Entry is term-scoped, so duplicate checks must be too.
+            existing_students = db.get_students_enrolled_in_term(form_level, term, academic_year, school_id)
+            def normalize_name(name):
+                import re
+                if not name or str(name).lower() == 'nan':
+                    return ""
+                return re.sub(r'\s+', ' ', str(name)).strip().lower()
+
+            # Map existing students for quick lookup
+            existing_student_map = {f"{normalize_name(s['first_name'])} {normalize_name(s['last_name'])}": s['student_id'] for s in existing_students}
+            
+            duplicate_action = request.form.get('duplicate_action') # 'skip' or 'maintain' or None
+            
+            duplicates_found = []
+            rows_to_process = []
+            
+            for index, row in df.iterrows():
+                first_name_raw = str(row[found_columns['First Name']]).strip()
+                last_name_raw = str(row[found_columns['Last Name']]).strip()
+                
+                first_name_norm = normalize_name(first_name_raw)
+                last_name_norm = normalize_name(last_name_raw)
+                
+                if not first_name_norm or not last_name_norm:
+                    continue
+                
+                full_name_norm = f"{first_name_norm} {last_name_norm}"
+                existing_student_id = existing_student_map.get(full_name_norm)
+                is_duplicate = existing_student_id is not None
+                
+                if is_duplicate:
+                    duplicates_found.append(f"{first_name_raw} {last_name_raw}")
+                
+                # Capture marks for this row
+                row_marks = {}
+                for subject, col_name in subject_columns.items():
+                    mark = row[col_name]
+                    if pd.notnull(mark):
+                        try:
+                            mark_val = int(float(mark))
+                            if 0 <= mark_val <= 100:
+                                row_marks[subject] = mark_val
+                        except (ValueError, TypeError):
+                            pass
+
+                rows_to_process.append({
+                    'first_name': first_name_raw,
+                    'last_name': last_name_raw,
+                    'is_duplicate': is_duplicate,
+                    'existing_student_id': existing_student_id,
+                    'marks': row_marks
+                })
+
+            # If duplicates found and no action specified, ask user
+            if duplicates_found and not duplicate_action:
+                return jsonify({
+                    'success': True,
+                    'has_duplicates': True,
+                    'duplicates': list(set(duplicates_found))[:20], # Show unique names, limit 20
+                    'total_duplicates': len(set(duplicates_found)),
+                    'message': f'Found {len(set(duplicates_found))} students who may already be enrolled.'
+                })
+
+            # Process rows using bulk method
+            result = db.bulk_upload_students_data(
+                rows_to_process=rows_to_process,
+                term=term,
+                academic_year=academic_year,
+                form_level=form_level,
+                school_id=school_id,
+                duplicate_action=duplicate_action
+            )
+            
+            if not result.get('success'):
+                return jsonify({'success': False, 'message': result.get('message', 'Bulk upload failed')}), 500
+            
+            success_count = result.get('success_count', 0)
+            mark_count = result.get('mark_count', 0)
+            fail_count = result.get('fail_count', 0)
+            errors = result.get('errors', [])
+            
+            message = f'Successfully processed students.'
+            if success_count > 0:
+                message = f'Added {success_count} new students. '
+            if mark_count > 0:
+                message += f'Saved {mark_count} subject marks. '
+            if fail_count > 0:
+                message += f'Failed to process {fail_count} records.'
+            
+            return jsonify({
+                'success': True, 
+                'message': message,
+                'marks_saved': mark_count,
+                'failed': fail_count,
+                'errors': errors[:10],
+                'term': term,
+                'academic_year': academic_year
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Invalid file format. Please upload an Excel file (.xlsx or .xls)'}), 400
+            
+    except Exception as e:
+        import traceback
+        print(f"Excel upload error: {e}")
+        print(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'Error processing Excel file: {str(e)}'
         })
 
 
@@ -1398,6 +1830,88 @@ def api_get_all_students():
             'message': f'Error retrieving students: {str(e)}'
         })
 
+@app.route('/api/upload-signature', methods=['POST'])
+def api_upload_signature():
+    """Handle signature image uploads"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+        
+        if 'signature' not in request.files:
+            return jsonify({'success': False, 'message': 'No file part'}), 400
+        
+        file = request.files['signature']
+        sig_type = request.form.get('type')  # head_teacher, form_1, form_2, etc.
+        
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'No selected file'}), 400
+        
+        valid_types = ['head_teacher', 'form_1', 'form_2', 'form_3', 'form_4']
+        if not sig_type or sig_type not in valid_types:
+            return jsonify({'success': False, 'message': 'Invalid signature type'}), 400
+
+        if file and allowed_file(file.filename):
+            # Extract extension
+            ext = file.filename.rsplit('.', 1)[1].lower()
+            filename = secure_filename(f"{sig_type}_{school_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}")
+            
+            # Ensure folder for this school exists
+            school_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(school_id))
+            os.makedirs(school_folder, exist_ok=True)
+            
+            file_path = os.path.join(school_folder, filename)
+            file.save(file_path)
+            
+            # Relative path for web access and DB storage
+            relative_path = f"static/uploads/signatures/{school_id}/{filename}"
+            
+            # Update database
+            db_field = f"{sig_type}_signature" if sig_type == 'head_teacher' else f"{sig_type}_teacher_signature"
+            db.update_school_settings({db_field: relative_path}, school_id)
+            
+            return jsonify({
+                'success': True, 
+                'message': 'Signature uploaded successfully',
+                'path': relative_path
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Allowed file types: png, jpg, jpeg'}), 400
+            
+    except Exception as e:
+        print(f"Error in signature upload: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Upload failed: {str(e)}'}), 500
+
+@app.route('/api/delete-signature', methods=['POST'])
+def api_delete_signature():
+    """Handle signature deletion"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+        
+        data = request.get_json()
+        sig_type = data.get('type')  # head_teacher, form_1, form_2, etc.
+        
+        valid_types = ['head_teacher', 'form_1', 'form_2', 'form_3', 'form_4']
+        if not sig_type or sig_type not in valid_types:
+            return jsonify({'success': False, 'message': 'Invalid signature type'}), 400
+
+        # Update database with empty string
+        db_field = f"{sig_type}_signature" if sig_type == 'head_teacher' else f"{sig_type}_teacher_signature"
+        db.update_school_settings({db_field: ""}, school_id)
+        
+        return jsonify({
+            'success': True, 
+            'message': 'Signature removed successfully'
+        })
+            
+    except Exception as e:
+        print(f"Error in signature deletion: {e}")
+        return jsonify({'success': False, 'message': f'Deletion failed: {str(e)}'}), 500
+
 @app.route('/api/update-settings', methods=['POST'])
 @app.route('/api/update-school-settings', methods=['POST'])
 def api_update_school_settings():
@@ -1415,13 +1929,6 @@ def api_update_school_settings():
         
         # Update school settings
         db.update_school_settings(data, school_id)
-        
-        # Update academic periods if terms and academic_years are provided
-        if 'terms' in data and 'academic_years' in data:
-            terms_list = data.get('terms', [])
-            years_list = data.get('academic_years', [])
-            if isinstance(terms_list, list) and isinstance(years_list, list) and len(terms_list) > 0 and len(years_list) > 0:
-                db.update_academic_periods(years_list, terms_list, school_id)
         
         return jsonify({
             'success': True,
@@ -1467,6 +1974,13 @@ def api_export_rankings_pdf():
         styles = getSampleStyleSheet()
         story = []
         
+        # Header
+        settings = db.get_school_settings(school_id)
+        school_name = settings.get('school_name') or 'SECONDARY SCHOOL'
+        
+        header_style = ParagraphStyle('Header', parent=styles['Normal'], alignment=1, fontSize=14, spaceAfter=10)
+        story.append(Paragraph(f"<b>{school_name.upper()}</b>", header_style))
+        
         # Title
         title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], alignment=1, spaceAfter=30)
         story.append(Paragraph(f"Form {form_level} Student Rankings - {term} {academic_year}", title_style))
@@ -1480,7 +1994,7 @@ def api_export_rankings_pdf():
                     str(i + 1),
                     student['name'],
                     str(student.get('aggregate_points', 'N/A')),
-                    f"{student['subjects_passed']}/12",
+                    f"{student['subjects_passed']}/{student.get('total_subjects', 12)}",
                     student['status']
                 ])
         else:
@@ -1490,7 +2004,7 @@ def api_export_rankings_pdf():
                     str(i + 1),
                     student['name'],
                     student.get('grade', 'N/A'),
-                    f"{student['subjects_passed']}/12",
+                    f"{student['subjects_passed']}/{student.get('total_subjects', 12)}",
                     student['status']
                 ])
         
@@ -1512,7 +2026,7 @@ def api_export_rankings_pdf():
         buffer.seek(0)
         response = make_response(buffer.read())
         response.headers['Content-Type'] = 'application/pdf'
-        response.headers['Content-Disposition'] = f'attachment; filename="Form_{form_level}_Rankings_{term}_{academic_year}.pdf"'
+        response.headers['Content-Disposition'] = f'inline; filename="Form_{form_level}_Rankings_{term}_{academic_year}.pdf"'
         return response
         
     except Exception as e:
@@ -1549,6 +2063,13 @@ def api_export_top_performers_pdf():
         styles = getSampleStyleSheet()
         story = []
         
+        # Header
+        settings = db.get_school_settings(school_id)
+        school_name = settings.get('school_name') or 'SECONDARY SCHOOL'
+        
+        header_style = ParagraphStyle('Header', parent=styles['Normal'], alignment=1, fontSize=14, spaceAfter=10)
+        story.append(Paragraph(f"<b>{school_name.upper()}</b>", header_style))
+        
         # Title
         category_titles = {
             'overall': 'Best Overall Students',
@@ -1559,7 +2080,7 @@ def api_export_top_performers_pdf():
         
         title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], alignment=1, spaceAfter=30)
         story.append(Paragraph(f"{category_titles.get(category, category.title())} - Form {form_level}", title_style))
-        story.append(Paragraph(f"{term} {academic_year}", styles['Normal']))
+        story.append(Paragraph(f"{term} {academic_year}", ParagraphStyle('SubTitle', parent=styles['Normal'], alignment=1)))
         story.append(Spacer(1, 12))
         
         # Table data
@@ -1590,7 +2111,7 @@ def api_export_top_performers_pdf():
         buffer.seek(0)
         response = make_response(buffer.read())
         response.headers['Content-Type'] = 'application/pdf'
-        response.headers['Content-Disposition'] = f'attachment; filename="Top_Performers_{category}_Form_{form_level}_{term}_{academic_year}.pdf"'
+        response.headers['Content-Disposition'] = f'inline; filename="Top_Performers_{category}_Form_{form_level}_{term}_{academic_year}.pdf"'
         return response
         
     except Exception as e:
@@ -1637,16 +2158,16 @@ def api_update_selected_period():
         
         # Update only the selected term and academic year
         updated_settings = {
-            'school_name': current_settings.get('school_name') or '',
-            'school_address': current_settings.get('school_address') or '',
-            'school_phone': current_settings.get('school_phone') or '',
-            'school_email': current_settings.get('school_email') or '',
-            'pta_fund': current_settings.get('pta_fund') or '',
-            'sdf_fund': current_settings.get('sdf_fund') or '',
-            'boarding_fee': current_settings.get('boarding_fee') or '',
-            'next_term_begins': current_settings.get('next_term_begins') or '',
-            'boys_uniform': current_settings.get('boys_uniform') or '',
-            'girls_uniform': current_settings.get('girls_uniform') or '',
+            'school_name': current_settings.get('school_name', ''),
+            'school_address': current_settings.get('school_address', ''),
+            'school_phone': current_settings.get('school_phone', ''),
+            'school_email': current_settings.get('school_email', ''),
+            'pta_fund': current_settings.get('pta_fund', ''),
+            'sdf_fund': current_settings.get('sdf_fund', ''),
+            'boarding_fee': current_settings.get('boarding_fee', ''),
+            'next_term_begins': current_settings.get('next_term_begins', ''),
+            'boys_uniform': current_settings.get('boys_uniform', ''),
+            'girls_uniform': current_settings.get('girls_uniform', ''),
             'selected_term': term,
             'selected_academic_year': academic_year
         }
