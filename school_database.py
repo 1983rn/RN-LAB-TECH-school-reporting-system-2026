@@ -362,6 +362,7 @@ class SchoolDatabase:
                 average FLOAT,
                 position INTEGER,
                 total_students INTEGER,
+                aggregate_points INTEGER,
                 grades JSONB,
                 remarks TEXT,
                 generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -403,9 +404,10 @@ class SchoolDatabase:
                     VALUES (%s, %s)
                 """, ('', school_id))
 
-            # Migration: Add total_students to student_results if missing
+            # Migration: Add total_students and aggregate_points to student_results if missing
             try:
                 cur.execute("ALTER TABLE student_results ADD COLUMN IF NOT EXISTS total_students INTEGER")
+                cur.execute("ALTER TABLE student_results ADD COLUMN IF NOT EXISTS aggregate_points INTEGER")
             except Exception:
                 pass
 
@@ -1564,6 +1566,40 @@ class SchoolDatabase:
                 'academic_periods': []
             }
     
+    def calculate_aggregate_points_for_student(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int = None) -> int:
+        """Calculate aggregate points for a student (best 6 subjects)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if school_id:
+                    cursor.execute("""
+                        SELECT mark FROM student_marks 
+                        WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                        ORDER BY mark DESC LIMIT 6
+                    """, (student_id, term, academic_year, school_id))
+                else:
+                    cursor.execute("""
+                        SELECT mark FROM student_marks 
+                        WHERE student_id = ? AND term = ? AND academic_year = ?
+                        ORDER BY mark DESC LIMIT 6
+                    """, (student_id, term, academic_year))
+                
+                best_marks = [row[0] for row in cursor.fetchall()]
+                
+                if len(best_marks) < 6:
+                    # Insufficient subjects (must have at least 6)
+                    return 54 if form_level >= 3 else 0
+                
+                grade_points = []
+                for mark in best_marks:
+                    grade = self.calculate_grade(mark, form_level, school_id)
+                    grade_points.append(int(grade) if str(grade).isdigit() else 9)
+                
+                return sum(grade_points)
+        except Exception as e:
+            self.logger.error(f"Error calculating aggregate points: {e}")
+            return 54 if form_level >= 3 else 0
+
     def get_student_position_and_points(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int = None) -> Dict:
         """Calculate student position in class and aggregate points with tied ranking"""
         try:
@@ -1597,44 +1633,7 @@ class SchoolDatabase:
                         break
                 
                 # Calculate aggregate points
-                if school_id:
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
-                    """, (student_id, term, academic_year, school_id))
-                else:
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ?
-                    """, (student_id, term, academic_year))
-                
-                subject_count = cursor.fetchone()[0]
-                
-                if subject_count <= 5:
-                    aggregate_points = 54 if form_level >= 3 else 0
-                else:
-                    if school_id:
-                        cursor.execute("""
-                            SELECT mark FROM student_marks 
-                            WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
-                            ORDER BY mark DESC LIMIT 6
-                        """, (student_id, term, academic_year, school_id))
-                    else:
-                        cursor.execute("""
-                            SELECT mark FROM student_marks 
-                            WHERE student_id = ? AND term = ? AND academic_year = ?
-                            ORDER BY mark DESC LIMIT 6
-                        """, (student_id, term, academic_year))
-                    
-                    best_marks = [row[0] for row in cursor.fetchall()]
-                    if form_level >= 3:
-                        grade_points = []
-                        for mark in best_marks:
-                            grade = self.calculate_grade(mark, form_level, school_id)
-                            grade_points.append(int(grade) if grade.isdigit() else 9)
-                        aggregate_points = sum(grade_points)
-                    else:
-                        aggregate_points = sum(best_marks) if best_marks else 0
+                aggregate_points = self.calculate_aggregate_points_for_student(student_id, term, academic_year, form_level, school_id)
                 
                 return {
                     'position': target_position,
@@ -1932,14 +1931,15 @@ class SchoolDatabase:
                         
                         insert_sql = """
                             INSERT INTO student_results 
-                            (student_id, form, term, academic_year, total_marks, average, position, total_students, grades, remarks, school_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (student_id, form, term, academic_year, total_marks, average, position, total_students, aggregate_points, grades, remarks, school_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT (student_id, term, academic_year, school_id)
                             DO UPDATE SET 
                                 total_marks = EXCLUDED.total_marks,
                                 average = EXCLUDED.average,
                                 position = EXCLUDED.position,
                                 total_students = EXCLUDED.total_students,
+                                aggregate_points = EXCLUDED.aggregate_points,
                                 grades = EXCLUDED.grades,
                                 remarks = EXCLUDED.remarks,
                                 generated_at = CURRENT_TIMESTAMP
@@ -1948,6 +1948,7 @@ class SchoolDatabase:
                             student_id, str(form_level), term, academic_year,
                             r.get('total_marks'), r.get('average'), r.get('position'),
                             rankings_data.get('total_students', 0),
+                            r.get('aggregate_points'),
                             json.dumps(marks), r.get('status'), school_id
                         ))
                 
@@ -1998,6 +1999,21 @@ class SchoolDatabase:
                         except Exception as e:
                             self.logger.error(f"Fallback count error in get_precomputed_result: {e}")
                             result['total_students'] = 0
+
+                    # Ensure Forms 3/4 always have aggregate points even if old cached rows don't store them.
+                    try:
+                        form_val = str(result.get('form', '1'))
+                        import re
+                        match = re.search(r'\d+', form_val)
+                        f_level = int(match.group()) if match else 1
+                        if f_level >= 3 and result.get('aggregate_points') is None:
+                            result['aggregate_points'] = self.calculate_aggregate_points_for_student(
+                                student_id, term, academic_year, f_level, school_id
+                            )
+                    except Exception as e:
+                        self.logger.error(f"Fallback aggregate points error in get_precomputed_result: {e}")
+                        if result.get('aggregate_points') is None:
+                            result['aggregate_points'] = 0
                             
                     return result
                 return None
