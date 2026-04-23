@@ -351,6 +351,37 @@ class SchoolDatabase:
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
 
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_results (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                form TEXT NOT NULL,
+                term TEXT NOT NULL,
+                academic_year TEXT NOT NULL,
+                total_marks INTEGER,
+                average FLOAT,
+                position INTEGER,
+                total_students INTEGER,
+                grades JSONB,
+                remarks TEXT,
+                generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                school_id INTEGER NOT NULL,
+                UNIQUE(student_id, term, academic_year, school_id)
+            )""")
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS report_cards (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                form TEXT NOT NULL,
+                term TEXT NOT NULL,
+                academic_year TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                school_id INTEGER NOT NULL,
+                UNIQUE(student_id, term, academic_year, school_id)
+            )""")
+
             # Create default fees if none exist
             cur.execute("SELECT COUNT(*) FROM school_fees")
             if cur.fetchone()[0] == 0:
@@ -371,6 +402,12 @@ class SchoolDatabase:
                     INSERT INTO school_settings (school_name, school_id)
                     VALUES (%s, %s)
                 """, ('', school_id))
+
+            # Migration: Add total_students to student_results if missing
+            try:
+                cur.execute("ALTER TABLE student_results ADD COLUMN IF NOT EXISTS total_students INTEGER")
+            except Exception:
+                pass
 
             conn.commit()
             cur.close()
@@ -680,6 +717,20 @@ class SchoolDatabase:
             self.logger.error(f"Bulk upload failed: {e}")
             return {'success': False, 'message': str(e)}
 
+    def get_students_enrolled_in_term_ids(self, form_level: int, term: str, academic_year: str, school_id: int) -> List[int]:
+        """Fetch IDs of students enrolled in a specific form, term, and academic year."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT student_id FROM student_term_enrollment 
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (form_level, term, academic_year, school_id))
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            self.logger.error(f"Error getting student IDs: {e}")
+            return []
+
     def get_students_enrolled_in_term(self, form_level: int, term: str, academic_year: str, school_id: int) -> List[Dict]:
         """Get students who are enrolled in a specific term and academic year."""
         try:
@@ -979,6 +1030,31 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error retrieving student marks: {e}")
             raise
+
+    def get_all_marks_for_form(self, form_level: int, term: str, academic_year: str, school_id: int) -> Dict[int, Dict[str, int]]:
+        """Get all marks for all students in a specific form, term, and academic year."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT student_id, subject, mark FROM student_marks 
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (form_level, term, academic_year, school_id))
+                
+                all_marks = {}
+                for row in cursor.fetchall():
+                    student_id = row[0]
+                    subject = row[1]
+                    mark = row[2]
+                    
+                    if student_id not in all_marks:
+                        all_marks[student_id] = {}
+                    all_marks[student_id][subject] = mark
+                    
+                return all_marks
+        except Exception as e:
+            self.logger.error(f"Error retrieving all marks for form: {e}")
+            return {}
     
     def calculate_grade(self, mark: int, form_level: int, school_id: int = None) -> str:
         """Calculate grade based on mark, form level and school-specific grading rules.
@@ -1598,6 +1674,14 @@ class SchoolDatabase:
                         WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '')
                     """, (form_level,))
                 total_class_size = cursor.fetchone()[0]
+
+                # If no active students found, fallback to total enrollment for this grade
+                if not total_class_size:
+                    if school_id:
+                        cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
+                    else:
+                        cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ?", (form_level,))
+                    total_class_size = cursor.fetchone()[0]
                 
                 # Get ALL students who have marks for this form, term, and academic year
                 if school_id:
@@ -1653,6 +1737,7 @@ class SchoolDatabase:
                         if form_level <= 2:
                             # Forms 1&2: Give F grade
                             rankings.append({
+                                'student_id': student_id,
                                 'name': f"{first_name} {last_name}",
                                 'average': average,
                                 'total_marks': total_marks,
@@ -1664,6 +1749,7 @@ class SchoolDatabase:
                         else:
                             # CRITICAL RULE: Forms 3&4 students with 1-5 subjects MUST get 54 aggregate points
                             rankings.append({
+                                'student_id': student_id,
                                 'name': f"{first_name} {last_name}",
                                 'average': average,
                                 'total_marks': total_marks,
@@ -1710,6 +1796,7 @@ class SchoolDatabase:
                         aggregate_points = sum(grade_points)
                         
                         rankings.append({
+                            'student_id': student_id,
                             'name': f"{first_name} {last_name}",
                             'average': average,
                             'total_marks': total_marks,
@@ -1747,6 +1834,7 @@ class SchoolDatabase:
                                 grade = 'D'  # Fallback for passed student
                         
                         rankings.append({
+                            'student_id': student_id,
                             'name': f"{first_name} {last_name}",
                             'average': average,
                             'total_marks': total_marks,
@@ -1800,16 +1888,164 @@ class SchoolDatabase:
                 # Count students who sat for at least one exam
                 students_with_marks = len(rankings)  # All students in rankings have marks
                 
-                # Return both rankings and counts
+                # Return rankings and counts
+                # According to authoritative rule: position is out of students entered in Data Entry
                 return {
                     'rankings': rankings,
-                    'total_students': total_class_size,  # Total learners entered for this particular class/form
-                    'students_with_marks': students_with_marks  # Students who sat for at least one exam
+                    'total_students': students_with_marks,  # Total students who sat for exams (Data Entry count)
+                    'total_enrolled': int(total_class_size) if total_class_size else 0,
+                    'students_with_marks': students_with_marks
                 }
                 
         except Exception as e:
             self.logger.error(f"Error getting student rankings: {e}")
             return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
+
+    def save_precomputed_results(self, form_level: int, term: str, academic_year: str, school_id: int):
+        """Precompute and save results for all students in a form/term/year."""
+        try:
+            rankings_data = self.get_student_rankings(form_level, term, academic_year, school_id)
+            rankings = rankings_data.get('rankings', [])
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get student mapping to get IDs if needed (rankings only have names currently)
+                # Wait, rankings should ideally have IDs. Let's check get_student_rankings logic.
+                # Lines 1624: for student_id, first_name, last_name in all_students:
+                # But line 1713: rankings.append({'name': f"{first_name} {last_name}", ...})
+                # I should update get_student_rankings to include student_id in the output.
+                
+                for r in rankings:
+                    student_id = r.get('student_id')
+                    if not student_id:
+                        # Fallback search if ID missing (though I will update get_student_rankings)
+                        cursor.execute("SELECT student_id FROM students WHERE first_name || ' ' || last_name = ? AND school_id = ?", (r['name'], school_id))
+                        row = cursor.fetchone()
+                        if row:
+                            student_id = row[0]
+                    
+                    if student_id:
+                        # Store grades as JSON
+                        # We need to fetch individual marks for this student to store in grades JSON
+                        marks = self.get_student_marks(student_id, term, academic_year, school_id)
+                        
+                        insert_sql = """
+                            INSERT INTO student_results 
+                            (student_id, form, term, academic_year, total_marks, average, position, total_students, grades, remarks, school_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT (student_id, term, academic_year, school_id)
+                            DO UPDATE SET 
+                                total_marks = EXCLUDED.total_marks,
+                                average = EXCLUDED.average,
+                                position = EXCLUDED.position,
+                                total_students = EXCLUDED.total_students,
+                                grades = EXCLUDED.grades,
+                                remarks = EXCLUDED.remarks,
+                                generated_at = CURRENT_TIMESTAMP
+                        """
+                        cursor.execute(self._adapt_query(insert_sql), (
+                            student_id, str(form_level), term, academic_year,
+                            r.get('total_marks'), r.get('average'), r.get('position'),
+                            rankings_data.get('total_students', 0),
+                            json.dumps(marks), r.get('status'), school_id
+                        ))
+                
+                conn.commit()
+                self.logger.info(f"Precomputed and saved results for Form {form_level}, {term} {academic_year} (School: {school_id})")
+                return True
+        except Exception as e:
+            self.logger.error(f"Error saving precomputed results: {e}")
+            return False
+
+    def get_precomputed_result(self, student_id: int, term: str, academic_year: str, school_id: int) -> Optional[Dict]:
+        """Retrieve precomputed results for a student."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM student_results 
+                    WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (student_id, term, academic_year, school_id))
+                row = cursor.fetchone()
+                if row:
+                    columns = [description[0] for description in cursor.description]
+                    result = dict(zip(columns, row))
+                    if isinstance(result.get('grades'), str):
+                        result['grades'] = json.loads(result['grades'])
+                    
+                    # Fallback for total_students if missing in old records
+                    if result.get('total_students') is None or result.get('total_students') == 0:
+                        try:
+                            # Extract numeric part from form string (e.g. "Form 1" -> 1)
+                            form_val = str(result.get('form', '1'))
+                            import re
+                            match = re.search(r'\d+', form_val)
+                            f_level = int(match.group()) if match else 1
+                            
+                            # Robust fallback count
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM students 
+                                WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')
+                            """, (f_level, school_id))
+                            count = cursor.fetchone()[0]
+                            
+                            if not count:
+                                cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (f_level, school_id))
+                                count = cursor.fetchone()[0]
+                                
+                            result['total_students'] = count if count else 0
+                        except Exception as e:
+                            self.logger.error(f"Fallback count error in get_precomputed_result: {e}")
+                            result['total_students'] = 0
+                            
+                    return result
+                return None
+        except Exception as e:
+            self.logger.error(f"Error retrieving precomputed result: {e}")
+            return None
+
+    def save_report_card_path(self, student_id: int, term: str, academic_year: str, file_path: str, school_id: int):
+        """Save path to a pre-generated report card PDF."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get form level for the student to store in report_cards table
+                cursor.execute("SELECT grade_level FROM students WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                row = cursor.fetchone()
+                form = str(row[0]) if row else 'Unknown'
+
+                insert_sql = """
+                    INSERT INTO report_cards 
+                    (student_id, form, term, academic_year, file_path, generated_at, school_id)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT (student_id, term, academic_year, school_id)
+                    DO UPDATE SET file_path = EXCLUDED.file_path, generated_at = CURRENT_TIMESTAMP
+                """
+                cursor.execute(self._adapt_query(insert_sql), (
+                    student_id, form, term, academic_year, file_path, school_id
+                ))
+                conn.commit()
+                return True
+        except Exception as e:
+            self.logger.error(f"Error saving report card path: {e}")
+            return False
+
+    def get_report_card_path(self, student_id: int, term: str, academic_year: str, school_id: int) -> Optional[str]:
+        """Retrieve path to a pre-generated report card PDF."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT file_path FROM report_cards 
+                    WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (student_id, term, academic_year, school_id))
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            self.logger.error(f"Error retrieving report card path: {e}")
+            return None
 
     def get_all_subject_rankings(self, form_level: int, term: str, academic_year: str, school_id: int) -> Dict:
         """Fetch and calculate rankings for ALL subjects in a form at once. Very high performance."""

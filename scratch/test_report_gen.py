@@ -9,7 +9,7 @@ try:
     from school_database import SchoolDatabase
     
     db = SchoolDatabase()
-    generator = TermlyReportGenerator(db)
+    generator = TermlyReportGenerator(db=db)
     
     # Try to generate a report for student ID 20 (Agnes Zimba, School 2)
     # This will fail at the Table creation if hAlign is the issue

@@ -70,8 +70,9 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 class TermlyReportGenerator:
     """Class for generating professional termly report cards with pass/fail determination"""
     
-    def __init__(self, school_name="[ENTER SCHOOL NAME]", school_address="[ENTER ADDRESS]", school_phone="[ENTER PHONE]", school_email="[ENTER EMAIL]", pta_fee="", sdf_fee="", boarding_fee="", boys_uniform="", girls_uniform="", emblem_path=None):
-        self.db = SchoolDatabase()
+    def __init__(self, school_name="[ENTER SCHOOL NAME]", school_address="[ENTER ADDRESS]", school_phone="[ENTER PHONE]", school_email="[ENTER EMAIL]", pta_fee="", sdf_fee="", boarding_fee="", boys_uniform="", girls_uniform="", emblem_path=None, db=None):
+        self.db = db if db else SchoolDatabase()
+        self.logger = logger
         self.standard_subjects = [
             'Agriculture', 'Biology', 'Bible Knowledge', 'Chemistry', 
             'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
@@ -544,9 +545,15 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             # Ensure the directory exists
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             
-            # Create PDF in memory
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.8*inch, bottomMargin=0.8*inch)
+            doc = BorderedDocTemplate(buffer, pagesize=A4, topMargin=0.8*inch, bottomMargin=0.4*inch, leftMargin=0.6*inch, rightMargin=0.6*inch)
+            frame = Frame(
+                0.6*inch, 0.4*inch,
+                A4[0]-1.2*inch, A4[1]-1.2*inch,
+                leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0
+            )
+            template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
+            doc.addPageTemplates([template])
             
             styles = getSampleStyleSheet()
             story = []
@@ -845,14 +852,48 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
 
             # --- 3. Student Info ---
             # Calculate position and average FIRST (before table)
-            # Use pre-calculated position if available
+            # Use pre-calculated position if available from database cache
             student_full_name = f"{student['first_name']} {student['last_name']}"
+            
+            # Priority: 1. Passed in overall_rankings (batch mode), 2. Database cache, 3. Calculate on fly
+            cached_result = self.db.get_precomputed_result(student_id, term, academic_year, school_id)
+            
             if overall_rankings and student_full_name in overall_rankings:
                 position_data = overall_rankings[student_full_name]
-                if total_students:
+                if total_students is not None and total_students != '--':
                     position_data['total_students'] = total_students
+            elif cached_result:
+                position_data = cached_result
             else:
                 position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
+            
+            # Safety check: ensure total_students is never '--' or None if possible
+            if not position_data.get('total_students') or position_data.get('total_students') == '--' or position_data.get('total_students') == 0:
+                 # Robust fallback count
+                 try:
+                     with self.db.get_connection() as conn:
+                         cursor = conn.cursor()
+                         # According to authoritative rule: count students who actually have marks for this term/year/form (Data Entry)
+                         cursor.execute("""
+                            SELECT COUNT(DISTINCT student_id) FROM student_marks 
+                            WHERE term = ? AND academic_year = ? AND form_level = ? AND school_id = ?
+                         """, (term, academic_year, form_level, school_id))
+                         count = cursor.fetchone()[0]
+                         
+                         if not count:
+                             # Fallback to counting active students if no marks found yet
+                             cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')", (form_level, school_id))
+                             count = cursor.fetchone()[0]
+                             
+                         if not count:
+                             # Last resort: count any student in this grade for this school
+                             cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
+                             count = cursor.fetchone()[0]
+                             
+                         position_data['total_students'] = count if count else '--'
+                 except Exception as e:
+                     print(f"Fallback count error: {e}")
+                     position_data['total_students'] = '--'
             avg = sum(d['mark'] for d in marks.values()) / len(marks) if marks else 0
             passed_subjects = sum(1 for d in marks.values() if d['mark'] >= (40 if form_level >= 3 else 50))
             english_mark = marks.get('English', {}).get('mark', 0)
@@ -1132,23 +1173,86 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             print("❌ No report data to export")
             return None
     
-    def export_class_summary_to_file(self, form_level: int, term: str, academic_year: str = '2024-2025', school_id: int = None):
-        """Export class pass/fail summary to file"""
-        filename = f"Form_{form_level}_{term}_PassFail_Summary_{academic_year.replace('-', '_')}.txt"
-        
-        summary = self.generate_pass_fail_summary(form_level, term, academic_year, school_id)
-        
-        if summary:
-            try:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(summary)
-                print(f"✅ Class summary exported to: {filename}")
-                return filename
-            except Exception as e:
-                print(f"❌ Error exporting summary: {e}")
+    def get_cache_path(self, student_id: int, term: str, academic_year: str, form_level: int) -> str:
+        """Construct the file path for a cached report card PDF."""
+        safe_year = str(academic_year).replace('/', '_').replace('-', '_')
+        safe_term = str(term).replace(' ', '_')
+        base_dir = os.path.join('reports_cache', safe_year, safe_term, f"Form_{form_level}")
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, f"student_{student_id}.pdf")
+
+    def export_individual_report_to_pdf_file(self, student_id: int, term: str, academic_year: str, school_id: int) -> Optional[str]:
+        """Generate a single report card and save it to disk."""
+        try:
+            student = self.db.get_student_by_id(student_id, school_id)
+            if not student:
                 return None
-        else:
-            print("❌ No summary data to export")
+            
+            form_level = student.get('grade_level', 1)
+            file_path = self.get_cache_path(student_id, term, academic_year, form_level)
+            
+            buffer = io.BytesIO()
+            doc = BorderedDocTemplate(
+                buffer,
+                pagesize=A4,
+                rightMargin=0.6*inch,
+                leftMargin=0.6*inch,
+                topMargin=0.5*inch,
+                bottomMargin=0.5*inch
+            )
+            frame = Frame(
+                0.6*inch, 0.4*inch,
+                A4[0]-1.2*inch, A4[1]-1.2*inch,
+                leftPadding=0, bottomPadding=0, rightPadding=0, topPadding=0
+            )
+            template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
+            doc.addPageTemplates([template])
+            
+            story = []
+            success = self._add_student_to_story(story, student_id, term, academic_year, school_id)
+            
+            if success:
+                doc.build(story)
+                buffer.seek(0)
+                with open(file_path, 'wb') as f:
+                    f.write(buffer.read())
+                
+                # Update database cache path
+                self.db.save_report_card_path(student_id, term, academic_year, file_path, school_id)
+                return file_path
+            return None
+        except Exception as e:
+            self.logger.error(f"Error caching report card for student {student_id}: {e}")
+            return None
+
+    def merge_cached_pdfs(self, student_ids: List[int], term: str, academic_year: str, school_id: int) -> Optional[io.BytesIO]:
+        """Merge existing cached PDFs into a single byte stream using pypdf."""
+        try:
+            from pypdf import PdfWriter, PdfReader
+            writer = PdfWriter()
+            
+            found_any = False
+            for student_id in student_ids:
+                file_path = self.db.get_report_card_path(student_id, term, academic_year, school_id)
+                if not file_path or not os.path.exists(file_path):
+                    # If not cached, generate it on the fly and cache it
+                    file_path = self.export_individual_report_to_pdf_file(student_id, term, academic_year, school_id)
+                
+                if file_path and os.path.exists(file_path):
+                    reader = PdfReader(file_path)
+                    for page in reader.pages:
+                        writer.add_page(page)
+                    found_any = True
+            
+            if found_any:
+                output = io.BytesIO()
+                writer.write(output)
+                output.seek(0)
+                return output
+            return None
+        except Exception as e:
+            self.logger.error(f"Error merging cached PDFs: {e}")
             return None
 
 

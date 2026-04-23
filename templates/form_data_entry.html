@@ -1103,66 +1103,46 @@
         const term = document.getElementById('termSelect').value;
         const academicYear = document.getElementById('yearSelect').value;
         const rows = document.querySelectorAll('#marksTable tbody tr[data-student-id]');
-        const total = rows.length;
-        if (total === 0) { showNotification('No students to load marks for.', 'info'); return; }
-        showNotification('Loading existing marks...', 'info');
-        let loadedCount = 0;
-        let errorCount = 0;
+        
+        if (rows.length === 0) {
+            showNotification('No students to load marks for.', 'info');
+            return;
+        }
 
-        rows.forEach(row => {
-            const studentId = row.getAttribute('data-student-id');
-            const timestamp = new Date().getTime();
-            const randomToken = Math.random().toString(36).substring(7);
+        showNotification('Loading marks for all students...', 'info');
 
-            fetch(`/api/load-student-marks?student_id=${studentId}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}&_t=${timestamp}&_r=${randomToken}`, {
-                cache: 'no-store',
-                headers: {
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
+        fetch(`/api/load-all-marks?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const allMarks = data.all_marks;
+                    let loadedCount = 0;
+
+                    rows.forEach(row => {
+                        const studentId = row.getAttribute('data-student-id');
+                        const studentMarks = allMarks[studentId];
+
+                        if (studentMarks) {
+                            Object.entries(studentMarks).forEach(([subject, mark]) => {
+                                const input = row.querySelector(`input[data-subject="${subject}"]`);
+                                if (input) {
+                                    input.value = mark;
+                                    markInputSaved(input);
+                                }
+                            });
+                            loadedCount++;
+                        }
+                    });
+
+                    showNotification(`Successfully loaded marks for ${loadedCount} student(s)`, 'success');
+                } else {
+                    showNotification('Error loading marks: ' + data.message, 'error');
                 }
             })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success && data.marks) {
-                        console.log(`Loaded marks for student ${studentId}:`, data.marks, data.debug_info);
-
-                        Object.entries(data.marks).forEach(([subject, mark]) => {
-                            const input = row.querySelector(`input[data-subject="${subject}"]`);
-                            if (input) {
-                                input.value = mark;
-                                // Store as saved baseline — no special styling, fully editable
-                                markInputSaved(input);
-                            }
-                        });
-                        loadedCount++;
-                        if (loadedCount + errorCount === total) {
-                            if (errorCount === 0) {
-                                showNotification(`Loaded marks for ${loadedCount} student(s)`, 'success');
-                            } else {
-                                showNotification(`Loaded marks for ${loadedCount} student(s), ${errorCount} error(s)`, 'warning');
-                            }
-                        }
-                    } else {
-                        console.error(`API error for student ${studentId}:`, data);
-                        errorCount++;
-                        if (loadedCount + errorCount === total) {
-                            showNotification(`Failed to load marks for ${errorCount} student(s)`, 'error');
-                        }
-                    }
-                })
-                .catch(err => {
-                    console.error(`Failed to load marks for student ${studentId}:`, err);
-                    errorCount++;
-                    if (loadedCount + errorCount === total) {
-                        showNotification(`Error loading marks for ${errorCount} student(s)`, 'error');
-                    }
-                });
-        });
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error loading marks: ' + error.message, 'error');
+            });
     }
 
     // Mark input change tracking

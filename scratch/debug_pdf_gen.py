@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.DEBUG)
 def debug_pdf_generation(student_id, term='Term 1', academic_year='2025-2026', school_id=2):
     print(f"--- DEBUGGING PDF GENERATION FOR STUDENT {student_id} ---")
     db = SchoolDatabase()
-    generator = TermlyReportGenerator(db)
+    generator = TermlyReportGenerator(db=db)
     
     # 1. Check Student
     student = db.get_student_by_id(student_id, 1) # Assuming school_id 1 for debug

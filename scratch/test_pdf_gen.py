@@ -10,7 +10,7 @@ from termly_report_generator import TermlyReportGenerator
 
 def test_pdf_gen():
     db = SchoolDatabase()
-    generator = TermlyReportGenerator(db)
+    generator = TermlyReportGenerator(db=db)
     
     # Try to find a student with marks
     with db.get_connection() as conn:

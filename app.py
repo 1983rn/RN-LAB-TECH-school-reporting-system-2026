@@ -28,6 +28,8 @@ from termly_report_generator import TermlyReportGenerator
 from performance_analyzer import PerformanceAnalyzer
 from school_database import SchoolDatabase
 from multi_user_manager import SchoolUserManager
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
@@ -47,6 +49,50 @@ if not app.secret_key:
     import secrets
     app.secret_key = secrets.token_hex(32)
     print('WARNING: Generated temporary SECRET_KEY; set SECRET_KEY env var for production')
+
+# Background Task Manager
+bg_executor = ThreadPoolExecutor(max_workers=4)
+task_status = {}  # {task_id: {"status": "pending|processing|completed|failed", "progress": 0, "message": ""}}
+
+def update_task_status(task_id, status, progress=0, message=""):
+    task_status[task_id] = {
+        "status": status,
+        "progress": progress,
+        "message": message,
+        "updated_at": datetime.now().isoformat()
+    }
+
+def background_report_generation(task_id, student_ids, term, academic_year, school_id):
+    """Worker function to generate reports in the background."""
+    try:
+        update_task_status(task_id, "processing", progress=10, message="Starting generation...")
+        
+        db = SchoolDatabase()
+        generator = TermlyReportGenerator(db=db)
+        
+        # Step 1: Precompute results for all students in the class/form
+        # Determine unique form levels from students
+        forms = set()
+        for sid in student_ids:
+            student = db.get_student_by_id(sid, school_id)
+            if student:
+                forms.add(student.get('grade_level'))
+        
+        for form in forms:
+            update_task_status(task_id, "processing", progress=20, message=f"Computing rankings for Form {form}...")
+            db.save_precomputed_results(form, term, academic_year, school_id)
+        
+        # Step 2: Generate individual PDFs
+        total = len(student_ids)
+        for i, sid in enumerate(student_ids):
+            progress = 30 + int((i / total) * 60)
+            update_task_status(task_id, "processing", progress=progress, message=f"Generating PDF {i+1} of {total}...")
+            generator.export_individual_report_to_pdf_file(sid, term, academic_year, school_id)
+            
+        update_task_status(task_id, "completed", progress=100, message="All reports generated successfully.")
+    except Exception as e:
+        app.logger.error(f"Background generation failed: {e}")
+        update_task_status(task_id, "failed", progress=0, message=str(e))
 
 # Configure Flask for production when deployed
 if os.environ.get('FLASK_ENV') == 'production':
@@ -949,9 +995,20 @@ def api_save_student_marks():
                 app.logger.info(f"DEBUG: After Update: new_mark for {subject} = {mark_value}")
         
         app.logger.info(f"Marks updated successfully for student: {student_id}")
+        
+        # Trigger background regeneration for this student's form
+        task_id = f"gen_{school_id}_{form_level}_{term}_{academic_year}".replace(' ', '_')
+        # We only trigger if not already processing to avoid spamming
+        if task_id not in task_status or task_status[task_id]['status'] in ['completed', 'failed']:
+            # Get all students in this form to regenerate all (since rankings might have changed)
+            students = db.get_students_enrolled_in_term(form_level, term, academic_year, school_id)
+            student_ids = [s['student_id'] for s in students]
+            bg_executor.submit(background_report_generation, task_id, student_ids, term, academic_year, school_id)
+
         return jsonify({
             'success': True,
-            'message': 'Marks saved successfully'
+            'message': 'Marks saved successfully. Report regeneration started in background.',
+            'task_id': task_id
         })
         
     except Exception as e:
@@ -998,7 +1055,6 @@ def api_load_student_marks():
         # Strong cache control to prevent browser caching
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0, private'
         response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '-1'
         response.headers['Vary'] = 'Cookie, Authorization'
         return response
         
@@ -1007,6 +1063,34 @@ def api_load_student_marks():
         return jsonify({
             'success': False,
             'message': f'Error loading marks: {str(e)}'
+        })
+
+@app.route('/api/load-all-marks', methods=['GET'])
+def api_load_all_marks():
+    """Load all marks for a form in a single request"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+        
+        form_level = int(request.args.get('form_level'))
+        term = request.args.get('term')
+        academic_year = request.args.get('academic_year')
+        
+        all_marks = db.get_all_marks_for_form(form_level, term, academic_year, school_id)
+        
+        # Convert student_id keys to strings for JSON
+        formatted_marks = {str(k): v for k, v in all_marks.items()}
+        
+        return jsonify({
+            'success': True,
+            'all_marks': formatted_marks
+        })
+    except Exception as e:
+        app.logger.error(f"Error loading all marks: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'Error loading all marks: {str(e)}'
         })
 
 @app.route('/api/get-subject-teachers', methods=['GET'])
@@ -1189,6 +1273,12 @@ def api_generate_report_card():
             'message': f'Error generating report: {str(e)}'
         })
 
+@app.route('/api/report-generation-status/<task_id>')
+def api_report_generation_status(task_id):
+    """Check the status of a background report generation task."""
+    status = task_status.get(task_id, {"status": "not_found", "progress": 0, "message": "Task not found."})
+    return jsonify(status)
+
 @app.route('/api/export-report-card', methods=['GET', 'POST'], strict_slashes=False)
 def api_export_report_card():
     """Export report card as PDF"""
@@ -1242,6 +1332,14 @@ def api_export_report_card():
             print(f"DEBUG [PDF Export]: No marks found for student {student_id} in {term} {academic_year}")
             return jsonify({'success': False, 'message': 'No marks found for this student'}), 404
         
+        # Check cache first
+        cached_path = db.get_report_card_path(student_id, term, academic_year, school_id)
+        if cached_path and os.path.exists(cached_path):
+            print(f"DEBUG [PDF Export]: Serving cached PDF for student {student_id}")
+            return send_file(cached_path, mimetype='application/pdf', as_attachment=True, 
+                             download_name=f"Report_{student['first_name']}_{student['last_name']}.pdf")
+
+        # If not cached, generate it synchronously (fallback)
         pdf_bytes = generator.export_report_to_pdf_bytes(student_id, term, academic_year, school_id)
         
         if pdf_bytes and len(pdf_bytes) > 100:  # Valid PDFs are usually > 100 bytes
@@ -1334,27 +1432,19 @@ def api_print_all_reports():
                 'message': f'No students with marks found for Form {form_level}, {term} {academic_year}'
             }), 404
 
-        # Optimized: Generate all reports in a single PDF building pass
+        # Use fast merging of cached PDFs
         student_ids = [s.get('student_id') for s in students]
-        combined_pdf_bytes = generator.export_multiple_reports_to_pdf_bytes(student_ids, term, academic_year, school_id)
+        combined_pdf_stream = generator.merge_cached_pdfs(student_ids, term, academic_year, school_id)
 
-        if not combined_pdf_bytes:
+        if not combined_pdf_stream:
             return jsonify({
                 'success': False,
-                'message': 'No report cards could be generated for any students'
+                'message': 'No report cards could be retrieved or generated'
             }), 500
 
         # Create response
-        response = make_response(combined_pdf_bytes)
-        response.headers['Content-Type'] = 'application/pdf'
-        response.headers['Content-Disposition'] = f'inline; filename="Form_{form_level}_Report_Cards_{term.replace(" ","_")}_{academic_year.replace("-","_")}.pdf"'
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        
-        app.logger.info(f"Generated optimized combined PDF for Form {form_level}, {term} {academic_year}: {len(student_ids)} reports")
-        
-        return response
+        filename = f"Form_{form_level}_Reports_{term}_{academic_year}.pdf".replace(' ', '_')
+        return send_file(combined_pdf_stream, mimetype='application/pdf', as_attachment=True, download_name=filename)
         
     except Exception as e:
         app.logger.error(f"Error generating combined PDF reports: {str(e)}")
@@ -1761,6 +1851,13 @@ def api_upload_students_excel():
             if fail_count > 0:
                 message += f'Failed to process {fail_count} records.'
             
+            # Trigger background regeneration if marks were saved
+            if mark_count > 0:
+                task_id = f"gen_{school_id}_{form_level}_{term}_{academic_year}".replace(' ', '_')
+                if task_id not in task_status or task_status[task_id]['status'] in ['completed', 'failed']:
+                    student_ids = db.get_students_enrolled_in_term_ids(form_level, term, academic_year, school_id)
+                    bg_executor.submit(background_report_generation, task_id, student_ids, term, academic_year, school_id)
+
             return jsonify({
                 'success': True, 
                 'message': message,
@@ -1768,7 +1865,8 @@ def api_upload_students_excel():
                 'failed': fail_count,
                 'errors': errors[:10],
                 'term': term,
-                'academic_year': academic_year
+                'academic_year': academic_year,
+                'task_id': task_id if mark_count > 0 else None
             })
         else:
             return jsonify({'success': False, 'message': 'Invalid file format. Please upload an Excel file (.xlsx or .xls)'}), 400
@@ -2563,7 +2661,7 @@ if __name__ == "__main__":
 
     # Start the Flask development server (safe for local use)
     try:
-        app.run(debug=args.debug, host=args.host, port=args.port, use_reloader=False)
+        app.run(debug=args.debug, host=args.host, port=args.port)
     except Exception as e:
         import traceback
         traceback.print_exc()
