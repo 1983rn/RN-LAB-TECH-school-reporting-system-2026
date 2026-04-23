@@ -752,15 +752,30 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             template = PageTemplate(id='bordered', frames=frame, onPage=doc.draw_border)
             doc.addPageTemplates([template])
 
+            # 4. Sort student_ids by student name for consistent serial numbering
+            # This ensures "starting afresh for each class" works correctly with alphabetical order
+            sorted_student_ids = sorted(student_ids, key=lambda sid: (
+                batch_students.get(sid, {}).get('first_name', '').strip().upper(),
+                batch_students.get(sid, {}).get('last_name', '').strip().upper()
+            ))
+
             story = []
             count = 0
             
-            for i, s_id in enumerate(student_ids):
-                # Pass the pre-calculated context to avoid ANY database calls inside the loop
+            # Determine prefix once
+            school_name = grading_ctx.get('settings', {}).get('school_name', '')
+            prefix = self._get_school_serial_prefix(school_name)
+
+            for i, s_id in enumerate(sorted_student_ids):
+                # Generate serial number: Prefix + 3-digit index (e.g., FS001)
+                serial_no = f"{prefix}{str(i+1).zfill(3)}"
+                
+                # Pass the pre-calculated context and serial_no
                 if self._add_student_to_story(story, s_id, term, academic_year, school_id,
-                                            batch_context=batch_context):
+                                            batch_context=batch_context,
+                                            serial_no=serial_no):
                     # Add page break between students, but not after the last one
-                    if i < len(student_ids) - 1:
+                    if i < len(sorted_student_ids) - 1:
                         story.append(PageBreak())
                     count += 1
 
@@ -779,7 +794,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             return None
 
     def _add_student_to_story(self, story: list, student_id: int, term: str, academic_year: str, school_id: int,
-                              batch_context: dict = None):
+                              batch_context: dict = None, serial_no: str = None):
         """Internal helper to add a single student's report content to a story list.
         Uses batch_context if provided to achieve zero-query performance.
         """
@@ -849,6 +864,26 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             story.append(Spacer(1, 2))
             story.append(Paragraph("<b>PROGRESS REPORT</b>", progress_style))
             story.append(Spacer(1, 2))
+
+            # Generate serial number if not provided (fallback for individual reports)
+            if not serial_no:
+                try:
+                    # In individual mode, we fetch all students in this class and find the index
+                    all_students = self.db.get_students_by_grade(form_level, school_id)
+                    # Sort alphabetically for consistent serial numbers
+                    active_students = [s for s in all_students if s.get('status', 'Active') == 'Active']
+                    active_students.sort(key=lambda s: (s['first_name'].strip().upper(), s['last_name'].strip().upper()))
+                    
+                    found_idx = 1
+                    for idx, s in enumerate(active_students):
+                        if s['student_id'] == student_id:
+                            found_idx = idx + 1
+                            break
+                    
+                    prefix = self._get_school_serial_prefix(school_name)
+                    serial_no = f"{prefix}{str(found_idx).zfill(3)}"
+                except Exception:
+                    serial_no = student.get('student_number', 'N/A')
 
             # --- 3. Student Info ---
             # Calculate position and average FIRST (before table)
@@ -938,7 +973,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                 final_row = ['Remarks:', status_text, 'Aggregate Points:', str(position_data.get('aggregate_points', '--'))]
 
             student_data = [
-                ['Serial No:', student.get('student_number', 'N/A'), '', ''],
+                ['Serial No:', serial_no, '', ''],
                 ['Student Name:', f"{student['first_name']} {student['last_name']}", '', ''],
                 ['Term:', term.replace('Term', '').strip(), '', ''],
                 ['Form:', str(form_level), '', ''],
@@ -1173,6 +1208,36 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             print("❌ No report data to export")
             return None
     
+    def _get_school_serial_prefix(self, school_name: str) -> str:
+        """Derive a school-specific prefix for serial numbers based on user examples."""
+        if not school_name:
+            return "SN"
+            
+        name = school_name.upper().strip()
+        
+        # User examples:
+        # 1. FALLS COMMUNITY DAY SECONDARY SCHOOL -> FS
+        # 2. FALLS OPEN COMMUNITY DAY SECONDARY SCHOOL -> FSO
+        # 3. NANJATI COMMUNITY DAY SECONDARY -> NA
+        
+        if "FALLS OPEN" in name:
+            return "FSO"
+        if "FALLS" in name:
+            return "FS"
+        if "NANJATI" in name:
+            return "NA"
+            
+        # Logic for others: First letters of first two major words
+        ignore_words = ["COMMUNITY", "DAY", "OF", "THE", "SECONDARY", "SCHOOL"]
+        words = [w for w in name.split() if w not in ignore_words]
+        
+        if len(words) >= 2:
+            return words[0][0] + words[1][0]
+        elif len(words) == 1:
+            return words[0][:2]
+            
+        return "SN"
+
     def get_cache_path(self, student_id: int, term: str, academic_year: str, form_level: int) -> str:
         """Construct the file path for a cached report card PDF."""
         safe_year = str(academic_year).replace('/', '_').replace('-', '_')
