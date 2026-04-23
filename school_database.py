@@ -2812,6 +2812,67 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error updating days remaining: {e}")
 
+    def get_students_batch(self, student_ids: List[int], school_id: int) -> Dict[int, Dict]:
+        """Fetch multiple students in a single query."""
+        if not student_ids: return {}
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                placeholders = ','.join(['?'] * len(student_ids))
+                query = f"SELECT * FROM students WHERE student_id IN ({placeholders}) AND school_id = ?"
+                cursor.execute(self._adapt_query(query), (*student_ids, school_id))
+                
+                columns = [desc[0] for desc in cursor.description]
+                return {row[columns.index('student_id')]: dict(zip(columns, row)) for row in cursor.fetchall()}
+        except Exception as e:
+            self.logger.error(f"Error fetching students batch: {e}")
+            return {}
+
+    def get_marks_batch(self, student_ids: List[int], term: str, academic_year: str, school_id: int) -> Dict[int, Dict]:
+        """Fetch all marks for multiple students in a single query."""
+        if not student_ids: return {}
+        try:
+            from collections import defaultdict
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                placeholders = ','.join(['?'] * len(student_ids))
+                query = f"""
+                    SELECT student_id, subject, mark, grade 
+                    FROM student_marks 
+                    WHERE student_id IN ({placeholders}) AND term = ? AND academic_year = ? AND school_id = ?
+                """
+                cursor.execute(self._adapt_query(query), (*student_ids, term, academic_year, school_id))
+                
+                batch_marks = defaultdict(dict)
+                for sid, subj, mark, grade in cursor.fetchall():
+                    batch_marks[sid][subj] = {'mark': mark, 'grade': grade}
+                return dict(batch_marks)
+        except Exception as e:
+            self.logger.error(f"Error fetching marks batch: {e}")
+            return {}
+
+    def get_grading_context(self, school_id: int) -> Dict:
+        """Fetch all grading rules and teacher comments at once for caching."""
+        try:
+            settings = self.get_school_settings(school_id)
+            junior_rules = settings.get('junior_grading_rules', DEFAULT_JUNIOR_GRADING)
+            senior_rules = settings.get('senior_grading_rules', DEFAULT_SENIOR_GRADING)
+            
+            # Pre-calculate comment maps for speed
+            junior_comments = {r['grade']: r.get('comment', 'N/A') for r in junior_rules}
+            senior_comments = {r['grade']: r.get('comment', 'N/A') for r in senior_rules}
+            
+            return {
+                'settings': settings,
+                'junior_rules': junior_rules,
+                'senior_rules': senior_rules,
+                'junior_comments': junior_comments,
+                'senior_comments': senior_comments
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting grading context: {e}")
+            return {}
+
 
 def main():
     """Main function for testing the database operations"""

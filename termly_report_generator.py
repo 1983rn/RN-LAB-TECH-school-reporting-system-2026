@@ -713,6 +713,24 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             for r in overall_rank_data.get('rankings', []):
                 rankings_map[r['name']] = r
 
+            # 3. --- BATCH PRE-FETCHING (The "Speed Secret") ---
+            print(f"DEBUG [Generator]: Fetching all batch data into memory...")
+            batch_students = self.db.get_students_batch(student_ids, school_id)
+            batch_marks = self.db.get_marks_batch(student_ids, term, academic_year, school_id)
+            grading_ctx = self.db.get_grading_context(school_id)
+            teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
+            
+            # Combine into a single lookup object
+            batch_context = {
+                'students_map': batch_students,
+                'marks_map': batch_marks,
+                'grading_ctx': grading_ctx,
+                'teachers_map': teachers_map,
+                'subject_rankings': subject_rankings,
+                'overall_rankings': rankings_map,
+                'total_students': total_students
+            }
+
             buffer = io.BytesIO()
             doc = BorderedDocTemplate(
                 buffer, pagesize=A4,
@@ -731,11 +749,9 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             count = 0
             
             for i, s_id in enumerate(student_ids):
-                # Add individual report content with pre-calculated rankings
+                # Pass the pre-calculated context to avoid ANY database calls inside the loop
                 if self._add_student_to_story(story, s_id, term, academic_year, school_id,
-                                            subject_rankings=subject_rankings,
-                                            overall_rankings=rankings_map,
-                                            total_students=total_students):
+                                            batch_context=batch_context):
                     # Add page break between students, but not after the last one
                     if i < len(student_ids) - 1:
                         story.append(PageBreak())
@@ -756,19 +772,31 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             return None
 
     def _add_student_to_story(self, story: list, student_id: int, term: str, academic_year: str, school_id: int,
-                              subject_rankings: dict = None, overall_rankings: dict = None, total_students: int = None):
-        """Internal helper to add a single student's report content to a story list with optional pre-calculated ranks."""
+                              batch_context: dict = None):
+        """Internal helper to add a single student's report content to a story list.
+        Uses batch_context if provided to achieve zero-query performance.
+        """
         try:
-            # Check if student exists
-            student = self.db.get_student_by_id(student_id, school_id)
-            if not student:
-                return False
+            # 1. --- Data Retrieval (Memory vs Database) ---
+            if batch_context:
+                student = batch_context['students_map'].get(student_id)
+                marks = batch_context['marks_map'].get(student_id)
+                settings = batch_context['grading_ctx'].get('settings', {})
+                teachers_map = batch_context['teachers_map']
+                subject_rankings = batch_context['subject_rankings']
+                overall_rankings = batch_context['overall_rankings']
+                total_students = batch_context['total_students']
+            else:
+                student = self.db.get_student_by_id(student_id, school_id)
+                marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
+                settings = self.db.get_school_settings(school_id)
+                teachers_map = self.db.get_subject_teachers(form_level=student.get('grade_level', 1) if student else 1, school_id=school_id)
+                subject_rankings = None
+                overall_rankings = None
+                total_students = None
 
-            marks = self.db.get_student_marks(student_id, term, academic_year, school_id)
-            if not marks:
+            if not student or not marks:
                 return False
-
-            settings = self.db.get_school_settings(school_id)
             school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
             school_address = settings.get('school_address') or self.school_address or ''
             school_phone = settings.get('school_phone') or self.school_phone or ''
@@ -835,7 +863,16 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                 if overall_status == 'FAIL':
                     overall_grade = 'F'
                 else:
-                    grades = [self.db.calculate_grade(d['mark'], form_level, school_id) for d in marks.values()]
+                    # Optimized grade calculation using local context
+                    def local_calculate_grade(mark):
+                        if batch_context:
+                            rules = batch_context['grading_ctx']['junior_rules' if form_level in [1,2] else 'senior_rules']
+                            for r in sorted(rules, key=lambda x: x['min'], reverse=True):
+                                if mark >= r['min']: return r['grade']
+                            return rules[-1]['grade']
+                        return self.db.calculate_grade(mark, form_level, school_id)
+
+                    grades = [local_calculate_grade(d['mark']) for d in marks.values()]
                     grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
                     for g in grades:
                         if g in grade_counts:
@@ -845,7 +882,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                     if len(most_common) == 1:
                         overall_grade = most_common[0]
                     else:
-                        overall_grade = self.db.calculate_grade(int(avg), form_level, school_id)
+                        overall_grade = local_calculate_grade(int(avg))
                     if overall_grade == 'F' and overall_status == 'PASS':
                         overall_grade = 'D'
             else:
@@ -892,22 +929,33 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             for subject in self.standard_subjects:
                 if subject in marks:
                     m = marks[subject]['mark']
-                    g = self.db.calculate_grade(m, form_level, school_id)
                     
-                    # Use pre-calculated subject rank if available
+                    # Optimized local grade lookup
+                    def local_calculate_grade(mark):
+                        if batch_context:
+                            rules = batch_context['grading_ctx']['junior_rules' if form_level in [1,2] else 'senior_rules']
+                            for r in sorted(rules, key=lambda x: x['min'], reverse=True):
+                                if mark >= r['min']: return r['grade']
+                            return rules[-1]['grade']
+                        return self.db.calculate_grade(mark, form_level, school_id)
+                    
+                    g = local_calculate_grade(m)
+                    
+                    # Optimized local position lookup
                     if subject_rankings and (subject, student_id) in subject_rankings:
                         pos = subject_rankings[(subject, student_id)]
                     else:
                         pos = self.db.get_subject_position(student_id, subject, term, academic_year, form_level, school_id)
-                    # Use dynamic teacher comment from database/settings
-                    comment = self.db.get_teacher_comment(g, form_level, school_id)
+                    
+                    # Optimized local comment lookup
+                    if batch_context:
+                        comment = batch_context['grading_ctx']['junior_comments' if form_level in [1,2] else 'senior_comments'].get(g, 'N/A')
+                    else:
+                        comment = self.db.get_teacher_comment(g, form_level, school_id)
+                        
                     teacher = teachers_map.get(subject, '')
                     teacher_text = str(teacher).strip() if teacher is not None else ''
-                    # Treat UI placeholder labels like "Business Studies Teacher F3" as unassigned.
                     is_placeholder_teacher = bool(re.match(r'^.+\s+Teacher\s+F[1-4]$', teacher_text, flags=re.IGNORECASE))
-                    # Signature rule:
-                    # - Subject has marks + real teacher assigned => teacher name
-                    # - Subject has marks + no real teacher assigned => blank line
                     signature = teacher_text if (teacher_text and not is_placeholder_teacher) else '_______________'
                     table_data.append([subject, str(m), g, pos, comment, signature])
                 else:
