@@ -149,10 +149,10 @@
                 
                 {% for stype_id, stype_label in sig_types %}
                 {% set field_name = stype_id ~ '_signature' if stype_id == 'head_teacher' else stype_id ~ '_teacher_signature' %}
-                {% set current_sig = (school_settings|default({})).get(field_name) %}
+                {% set current_sig = (settings|default({})).get(field_name) %}
                 <div class="mb-4 {% if not loop.last %}pb-3 border-bottom{% endif %}">
                     <label class="form-label d-flex justify-content-between small fw-bold">
-                        <span>{{ stype_label }}</span>
+                        <span>{{ stype_label }} Signature</span>
                         {% if current_sig %}
                         <span class="badge bg-success">Uploaded</span>
                         {% else %}

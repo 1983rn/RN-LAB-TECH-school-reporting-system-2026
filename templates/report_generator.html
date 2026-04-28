@@ -218,9 +218,6 @@ function exportReport() {
         return;
     }
     
-    // Provide a brief notification that the download is starting
-    showNotification('Preparing your report... download will start shortly.', 'info');
-    
     // Open in new tab to display inline and prevent IDM hijacking
     const downloadUrl = `/api/export-report-card?student_id=${studentId}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`;
     window.open(downloadUrl, '_blank');

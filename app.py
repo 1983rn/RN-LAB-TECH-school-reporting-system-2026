@@ -2225,6 +2225,61 @@ def api_export_rankings_pdf():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error generating PDF: {str(e)}'}), 500
 
+@app.route('/api/export-bulk-report-cards', methods=['GET'])
+def api_export_bulk_report_cards():
+    """Export all report cards for a form as a Combined PDF inside a ZIP file for fast download"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+            
+        form_level = request.args.get('form_level', type=int)
+        term = request.args.get('term')
+        academic_year = request.args.get('academic_year')
+        
+        if not all([form_level, term, academic_year]):
+            return jsonify({'success': False, 'message': 'Missing parameters: form_level, term, and academic_year are required'}), 400
+            
+        # Get all students for this form who have marks in this period
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT s.student_id 
+                FROM students s
+                JOIN student_marks m ON s.student_id = m.student_id
+                WHERE s.grade_level = ? AND m.term = ? AND m.academic_year = ? AND s.school_id = ?
+            """, (form_level, term, academic_year, school_id))
+            student_ids = [row[0] for row in cursor.fetchall()]
+        
+        if not student_ids:
+            return jsonify({'success': False, 'message': f'No student reports found for Form {form_level} in {term} {academic_year}. Please ensure marks are loaded.'}), 404
+            
+        # Generate the combined PDF bytes
+        print(f"DEBUG [Bulk Export]: Generating combined PDF for {len(student_ids)} students...")
+        pdf_bytes = generator.export_multiple_reports_to_pdf_bytes(student_ids, term, academic_year, school_id)
+        
+        if not pdf_bytes:
+            return jsonify({'success': False, 'message': 'Failed to generate combined report cards.'}), 500
+            
+        # Create a ZIP file in memory containing the PDF
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            pdf_filename = f"Combined_Report_Cards_Form_{form_level}_{term}_{academic_year.replace('/', '_')}.pdf"
+            zip_file.writestr(pdf_filename, pdf_bytes)
+            
+        zip_buffer.seek(0)
+        
+        response = make_response(zip_buffer.read())
+        response.headers['Content-Type'] = 'application/zip'
+        response.headers['Content-Disposition'] = f'attachment; filename="Report_Cards_Form_{form_level}_{term}_{academic_year.replace("/", "_")}.zip"'
+        return response
+        
+    except Exception as e:
+        print(f"ERROR [Bulk Export]: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Error generating batch download: {str(e)}'}), 500
+
 @app.route('/api/export-top-performers-pdf', methods=['POST'])
 def api_export_top_performers_pdf():
     """Export top performers as PDF"""

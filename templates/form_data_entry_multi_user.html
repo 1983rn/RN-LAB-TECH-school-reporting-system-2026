@@ -186,7 +186,7 @@
                             <i class="fas fa-trash-alt me-1"></i>Clear Data
                         </button>
                         <button class="btn btn-outline-malawi-green" id="printAllReportsBtn">
-                            <i class="fas fa-file-pdf me-1"></i>Combined PDF (All Students)
+                            <i class="fas fa-file-archive me-1"></i>Combined PDF (ZIP Archive)
                         </button>
                         <button class="btn btn-outline-primary" data-bs-toggle="modal"
                             data-bs-target="#uploadExcelModal">
@@ -727,8 +727,8 @@
                 printBtn.addEventListener('click', function () {
                     const term = document.getElementById('termSelect').value;
                     const year = document.getElementById('yearSelect').value;
-                    const url = `/api/print-all-reports?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(year)}`;
-                    window.open(url, '_blank');
+                    const url = `/api/export-bulk-report-cards?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(year)}`;
+                    window.location.href = url; // Use location.href for direct download
                 });
             }
         });
@@ -1176,9 +1176,6 @@
                 showNotification('Please select term and academic year first', 'warning');
                 return;
             }
-
-            // Provide a brief notification that the download is starting
-            showNotification(`Preparing report card for ${studentName}...`, 'info');
 
             // Open in new tab to display inline and prevent IDM hijacking
             const downloadUrl = `/api/export-report-card?student_id=${studentId}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`;
