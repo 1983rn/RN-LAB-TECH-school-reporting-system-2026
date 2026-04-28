@@ -223,10 +223,17 @@ def check_developer_auth():
 
 def get_current_school_id():
     """Get current school ID from session"""
-    if session.get('user_type') == 'school':
-        return session.get('user_id')
-    elif session.get('user_type') == 'school_user':
-        return session.get('school_id')
+    user_type = session.get('user_type')
+    if user_type in ('school', 'school_user'):
+        # Prefer explicit school_id for strict tenant isolation.
+        sid = session.get('school_id')
+        if sid is None and user_type == 'school':
+            # Backward compatibility for older sessions where user_id stored school_id.
+            sid = session.get('user_id')
+        try:
+            return int(sid) if sid is not None else None
+        except (TypeError, ValueError):
+            return None
     return None
 
 def require_school_auth():
@@ -254,13 +261,7 @@ def inject_school_settings():
     """Make school settings available to all templates"""
     school_settings = {}
     try:
-        user_type = session.get('user_type')
-        school_id = None
-        
-        if user_type == 'school':
-            school_id = session.get('user_id')
-        elif user_type == 'school_user':
-            school_id = session.get('school_id')
+        school_id = get_current_school_id()
             
         if school_id:
             school_name_from_session = session.get('school_name', '')
@@ -339,9 +340,10 @@ try:
         school_name="[ENTER SCHOOL NAME]",
         school_address="[ENTER ADDRESS]",
         school_phone="[ENTER PHONE]",
-        school_email="[ENTER EMAIL]"
+        school_email="[ENTER EMAIL]",
+        db=db
     )
-    analyzer = PerformanceAnalyzer("[ENTER SCHOOL NAME]")
+    analyzer = PerformanceAnalyzer("[ENTER SCHOOL NAME]", db=db)
     print("SUCCESS: System components initialized successfully")
 except Exception as e:
     # Record the initialization failure so the CLI can report it cleanly
@@ -527,6 +529,7 @@ def api_login():
         if user_type == 'developer':
             # Developer uses bcrypt hashing
             if username == DEVELOPER_USERNAME and verify_password(password, DEVELOPER_PASSWORD_HASH):
+                session.clear()
                 session['user_id'] = 'developer'
                 session['user_type'] = 'developer'
                 session['username'] = username
@@ -540,6 +543,7 @@ def api_login():
                     # Try to authenticate as school user
                     user = user_manager.authenticate_school_user(username, password, school['school_id'])
                     if user:
+                        session.clear()
                         session['user_id'] = user['user_id']
                         session['school_user_id'] = user['user_id']
                         session['user_type'] = 'school_user'
@@ -569,7 +573,9 @@ def api_login():
                         })
                 
                 # Fallback to school admin login
+                session.clear()
                 session['user_id'] = school['school_id']
+                session['school_id'] = school['school_id']
                 session['user_type'] = 'school'
                 session['username'] = username
                 session['school_name'] = school['school_name']

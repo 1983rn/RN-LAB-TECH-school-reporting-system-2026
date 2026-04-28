@@ -410,7 +410,20 @@ class SchoolDatabase:
                 cur.execute("ALTER TABLE student_results ADD COLUMN IF NOT EXISTS aggregate_points INTEGER")
             except Exception:
                 pass
-
+            
+            # Ensure UNIQUE constraint on school_id in school_settings
+            cur.execute("""
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'school_settings_school_id_key'
+                    ) THEN
+                        ALTER TABLE school_settings ADD CONSTRAINT school_settings_school_id_key UNIQUE (school_id);
+                    END IF;
+                END $$;
+            """)
+            
+            # Commit the table creation and constraints
             conn.commit()
             cur.close()
             conn.close()
@@ -1483,12 +1496,21 @@ class SchoolDatabase:
     
     def get_school_settings(self, school_id: int = None) -> Dict:
         """Get current school settings including academic periods - isolated by school_id with caching."""
-        if not school_id:
+        if school_id is None:
+            self.logger.warning("get_school_settings called without school_id")
+            return {}
+            
+        try:
+            # Ensure school_id is an integer for consistent cache keys
+            school_id = int(school_id)
+        except (ValueError, TypeError):
+            self.logger.error(f"Invalid school_id type in get_school_settings: {type(school_id)}")
             return {}
             
         # Check cache first
         if hasattr(self, '_settings_cache') and school_id in self._settings_cache:
-            return self._settings_cache[school_id]
+            # Return a COPY to prevent callers from modifying the cached object
+            return self._settings_cache[school_id].copy()
             
         try:
             with self.get_connection() as conn:
@@ -1555,7 +1577,7 @@ class SchoolDatabase:
                 # Update cache
                 if not hasattr(self, '_settings_cache'):
                     self._settings_cache = {}
-                self._settings_cache[school_id] = settings
+                self._settings_cache[school_id] = settings.copy()
                 
                 return settings
                     
@@ -2602,58 +2624,68 @@ class SchoolDatabase:
         return default_comments.get(grade, 'N/A')
     
     def update_school_settings(self, settings_data: Dict, school_id: int = None):
-        """Update school settings in database - supports partial updates"""
+        """Update school settings with strict tenant isolation and cache invalidation."""
+        if school_id is None:
+            self.logger.warning("Attempted to update settings without school_id")
+            return
+            
+        try:
+            school_id = int(school_id)
+        except (ValueError, TypeError):
+            self.logger.error(f"Invalid school_id type in update_school_settings: {type(school_id)}")
+            return
+            
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Ensure a row exists for this school_id
-                cursor.execute("SELECT COUNT(*) FROM school_settings WHERE school_id = ?", (school_id,))
-                exists = cursor.fetchone()[0] > 0
+                # Use UPSERT (INSERT ... ON CONFLICT) for atomic thread-safe update
+                # This ensures we either create the row or update the existing one for THIS school_id
                 
-                if not exists:
-                    # Initial insert with provided data or defaults
-                    cursor.execute("""
-                        INSERT INTO school_settings (school_id, updated_date)
-                        VALUES (?, ?)
-                    """, (school_id, datetime.now().isoformat()))
-                
-                # Build dynamic UPDATE statement based on keys in settings_data
-                update_fields = []
-                update_values = []
-                
-                # Map of allowed fields to their dictionary keys
                 allowed_fields = [
                     'school_name', 'school_address', 'school_phone', 'school_email',
                     'pta_fund', 'sdf_fund', 'boarding_fee', 'next_term_begins',
                     'boys_uniform', 'girls_uniform', 'selected_term', 'selected_academic_year',
-                    'junior_grading_rules', 'senior_grading_rules',
-                    'form_1_teacher_signature', 'form_2_teacher_signature',
-                    'form_3_teacher_signature', 'form_4_teacher_signature',
-                    'head_teacher_signature'
+                    'head_teacher_name', 'head_teacher_signature',
+                    'form_1_teacher_name', 'form_1_teacher_signature',
+                    'form_2_teacher_name', 'form_2_teacher_signature',
+                    'form_3_teacher_name', 'form_3_teacher_signature',
+                    'form_4_teacher_name', 'form_4_teacher_signature',
+                    'junior_grading_rules', 'senior_grading_rules'
                 ]
+                update_values_list = []
+                cols_list = ["school_id", "updated_date"]
+                values = [school_id, datetime.now().isoformat()]
                 
+                has_updates = False
                 for field in allowed_fields:
                     if field in settings_data:
                         val = settings_data[field]
-                        # Special handling for JSON fields
-                        if field in ['junior_grading_rules', 'senior_grading_rules'] and isinstance(val, list):
+                        if field in ['junior_grading_rules', 'senior_grading_rules'] and not isinstance(val, str):
                             val = json.dumps(val)
-                        
-                        update_fields.append(f"{field} = ?")
-                        update_values.append(val)
+                        cols_list.append(field)
+                        values.append(val)
+                        has_updates = True
                 
-                if update_fields:
-                    update_fields.append("updated_date = ?")
-                    update_values.append(datetime.now().isoformat())
-                    update_values.append(school_id)
+                if has_updates:
+                    # Construct UPSERT query
+                    set_clause = ", ".join([f"{f} = EXCLUDED.{f}" for f in cols_list if f != 'school_id'])
+                    query = f"""
+                        INSERT INTO school_settings ({", ".join(cols_list)})
+                        VALUES ({", ".join(["?"] * len(cols_list))})
+                        ON CONFLICT (school_id) 
+                        DO UPDATE SET {set_clause}
+                    """
                     
-                    query = f"UPDATE school_settings SET {', '.join(update_fields)} WHERE school_id = ?"
-                    cursor.execute(self._adapt_query(query), update_values)
-                
-                self.logger.info(f"School settings updated successfully (School: {school_id}, Partial: True)")
+                    cursor.execute(self._adapt_query(query), values)
+                    self.logger.info(f"Updated settings for school_id {school_id}")
+                    
+                # Invalidate cache
+                if hasattr(self, '_settings_cache') and school_id in self._settings_cache:
+                    del self._settings_cache[school_id]
+                    
         except Exception as e:
-            self.logger.error(f"Error updating school settings: {e}")
+            self.logger.error(f"Error updating school settings for ID {school_id}: {e}")
             raise
     
     def update_academic_periods(self, academic_years: List[str], terms: List[str], school_id: int = None):
@@ -2703,45 +2735,40 @@ class SchoolDatabase:
             return []
     
     def get_available_terms_and_years(self, school_id: int = None) -> Dict:
-        """Get available terms and academic years that have actual grade data"""
+        """Get available terms and academic years that have actual grade data for this school."""
         try:
+            if not school_id:
+                return {'all_terms': [], 'all_years': [], 'terms_with_data': [], 'years_with_data': []}
+                
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Get terms and years that actually have grade data - ONLY for this school_id
-                if school_id:
-                    cursor.execute("""
-                        SELECT DISTINCT term, academic_year 
-                        FROM student_marks sm
-                        JOIN students s ON sm.student_id = s.student_id
-                        WHERE s.school_id = ?
-                        ORDER BY academic_year DESC, term
-                    """, (school_id,))
-                else:
-                    # If no school_id provided, return empty (no data from other schools)
-                    return {
-                        'all_terms': [],
-                        'all_years': [],
-                        'terms_with_data': [],
-                        'years_with_data': []
-                    }
+                # Get terms and years that actually have marks data - isolated by school_id
+                cursor.execute("""
+                    SELECT DISTINCT sm.term, sm.academic_year 
+                    FROM student_marks sm
+                    JOIN students s ON sm.student_id = s.student_id
+                    WHERE s.school_id = %s
+                    ORDER BY sm.academic_year DESC, sm.term
+                """, (school_id,))
                 
                 rows = cursor.fetchall()
                 
-                # Extract unique terms and years
+                # Extract unique terms and years with data
                 terms_with_data = sorted(list(set([row[0] for row in rows])))
                 years_with_data = sorted(list(set([row[1] for row in rows])), reverse=True)
                 
-                # Get all configured periods
+                # Get all configured periods for this school
                 all_periods = self.get_academic_periods(school_id)
                 all_terms = sorted(list(set([period['period_name'] for period in all_periods])))
                 all_years = sorted(list(set([period['academic_year'] for period in all_periods])), reverse=True)
                 
-                # Fallback to defaults if no periods configured
+                # Fallback to defaults if no periods configured at all
                 if not all_terms:
                     all_terms = ['Term 1', 'Term 2', 'Term 3']
                 if not all_years:
-                    all_years = [f'{y}-{y+1}' for y in range(2020, 2031)]
+                    current_year = datetime.now().year
+                    all_years = [f"{current_year}", f"{current_year-1}", f"{current_year+1}"]
                 
                 return {
                     'all_terms': all_terms,
@@ -2751,10 +2778,10 @@ class SchoolDatabase:
                     'periods_with_data': [{'term': row[0], 'year': row[1]} for row in rows]
                 }
         except Exception as e:
-            self.logger.error(f"Error getting available terms and years: {e}")
+            self.logger.error(f"Error getting terms and years for school {school_id}: {e}")
             return {
                 'all_terms': ['Term 1', 'Term 2', 'Term 3'],
-                'all_years': [f'{y}-{y+1}' for y in range(2020, 2031)],
+                'all_years': [f"{datetime.now().year}"],
                 'terms_with_data': [],
                 'years_with_data': [],
                 'periods_with_data': []

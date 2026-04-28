@@ -92,6 +92,24 @@ class TermlyReportGenerator:
         self.girls_uniform = girls_uniform
         # Malawi Government emblem image path
         self.emblem_path = emblem_path
+
+    def _resolve_signature_file_path(self, signature_path: Optional[str]) -> Optional[str]:
+        """Resolve stored signature path to a filesystem path for ReportLab."""
+        if not signature_path:
+            return None
+
+        raw_path = str(signature_path).strip()
+        if not raw_path:
+            return None
+
+        # Accept absolute paths directly.
+        if os.path.isabs(raw_path):
+            return raw_path
+
+        # Stored values are usually web-relative (e.g. static/uploads/...).
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        normalized_relative = raw_path.lstrip('/\\')
+        return os.path.join(base_dir, normalized_relative)
     
     def _build_grading_string(self, form_level: int, school_id: int = None) -> str:
         """Build a grading key string like 'A(80-100) B(70-79) ...' from school settings.
@@ -182,9 +200,10 @@ class TermlyReportGenerator:
         school_name = settings.get('school_name', self.school_name)
         school_address = settings.get('school_address', 'P.O. Box [NUMBER], [CITY], Malawi')
         
-        # Format address lines
-        address_lines = school_address.split(', ')
-        formatted_address = '\n'.join([f"                            {line.strip()}" for line in address_lines])
+        # Format address lines - split by both comma and newline
+        import re
+        address_lines = re.split(r'[,\n]', school_address)
+        formatted_address = '\n'.join([f"                            {line.strip()}" for line in address_lines if line.strip()])
         
         # Simple header
         report = f"""
@@ -408,13 +427,15 @@ For High Performing Students:
         settings = self.db.get_school_settings(school_id)
         school_name = settings.get('school_name') or self.school_name or '[SCHOOL NAME]'
         
+        # Format address lines for the text report
+        import re
+        address_lines = re.split(r'[,\n]', school_address)
+        formatted_address = '\n'.join([f"                            {line.strip()}" for line in address_lines if line.strip()])
+        
         # Authentic Malawi report card format
         report = f"""
                             {school_name}
-                          PRIVATE BAG 211
-                             KAWALE
-                            LILONGWE
-                             MALAWI
+{formatted_address}
 
                          PROGRESS REPORT
 
@@ -855,7 +876,10 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             # --- 2. School Header ---
             story.append(Paragraph(f"<b>{school_name}</b>", school_name_style))
             story.append(Spacer(1, 2))
-            for line in school_address.split(','):
+            
+            import re
+            # Split address by both commas and newlines to handle various input formats
+            for line in re.split(r'[,\n]', school_address):
                 line = line.strip()
                 if line:
                     story.append(Paragraph(f"<b>{line}</b>", address_style))
@@ -1113,7 +1137,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             
             # Form Teacher's Signature (Label and Image on same line)
             ft_sig_field = f"form_{form_level}_teacher_signature"
-            ft_sig_path = settings.get(ft_sig_field)
+            ft_sig_path = self._resolve_signature_file_path(settings.get(ft_sig_field))
             
             ft_sig_content = Paragraph(f"________________________", lower_section_style)
             if ft_sig_path and os.path.exists(ft_sig_path):
@@ -1143,7 +1167,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             story.append(Spacer(1, b_space))
             
             # Head Teacher's Signature (Label and Image on same line)
-            ht_sig_path = settings.get('head_teacher_signature')
+            ht_sig_path = self._resolve_signature_file_path(settings.get('head_teacher_signature'))
             ht_sig_content = Paragraph(f"________________________", lower_section_style)
             if ht_sig_path and os.path.exists(ht_sig_path):
                 try:

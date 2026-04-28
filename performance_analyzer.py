@@ -14,8 +14,8 @@ from typing import List, Dict, Optional
 class PerformanceAnalyzer:
     """Class for analyzing and generating performance reports"""
     
-    def __init__(self, school_name="[SCHOOL NAME]"):
-        self.db = SchoolDatabase()
+    def __init__(self, school_name="[SCHOOL NAME]", db=None):
+        self.db = db if db else SchoolDatabase()
         self.school_name = school_name
         
         # Department classifications

@@ -28,7 +28,8 @@
                     
                     <div class="mb-3">
                         <label for="schoolAddress" class="form-label">School Address</label>
-                        <input type="text" class="form-control" id="schoolAddress" value="{{ settings.school_address if settings and settings.school_address is not none and settings.school_address else '' }}">
+                        <textarea class="form-control" id="schoolAddress" rows="3">{{ settings.school_address if settings and settings.school_address is not none and settings.school_address else '' }}</textarea>
+                        <div class="form-text">Enter the full school address (e.g., P.O. Box, City, District)</div>
                     </div>
                     
                     <div class="mb-3">
