@@ -445,11 +445,21 @@ class SchoolDatabase:
                 self._conn = parent_conn
                 self._lastrowid = None
 
-            def execute(self, query, params=None):
+            def execute(self, query, params=None, skip_lastval=False):
                 q = query.replace('?', '%s')
                 self._cursor.execute(q, params or ())
+                self._lastrowid = None
+                
+                # Performance Optimization: Avoid SELECT LASTVAL() if possible
+                # 1. If explicitly skipped (e.g. in bulk operations)
+                # 2. If the query uses RETURNING (user is already getting the ID)
+                # 3. If it's not an INSERT
+                if skip_lastval:
+                    return self
+                    
                 try:
-                    if q.strip().lower().startswith('insert'):
+                    q_lower = q.strip().lower()
+                    if q_lower.startswith('insert') and 'returning' not in q_lower:
                         # Using a separate cursor to get LASTVAL safely
                         with self._conn.cursor(inner=True) as c2:
                             c2.execute('SELECT LASTVAL()')
@@ -642,6 +652,20 @@ class SchoolDatabase:
         errors = []
         
         try:
+            # Preload grading rules once per upload to avoid repeated settings/db reads.
+            grading_ctx = self.get_grading_context(school_id)
+            if form_level in [1, 2]:
+                grade_rules = grading_ctx.get('junior_rules') or list(DEFAULT_JUNIOR_GRADING)
+            else:
+                grade_rules = grading_ctx.get('senior_rules') or list(DEFAULT_SENIOR_GRADING)
+            grade_rules_sorted = sorted(grade_rules, key=lambda r: r['min'], reverse=True)
+
+            def grade_from_rules(mark: int) -> str:
+                for rule in grade_rules_sorted:
+                    if mark >= rule['min']:
+                        return rule['grade']
+                return grade_rules_sorted[-1]['grade'] if grade_rules_sorted else ('F' if form_level in [1, 2] else '9')
+
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -681,21 +705,24 @@ class SchoolDatabase:
                                 INSERT INTO student_term_enrollment (student_id, term, academic_year, form_level, school_id)
                                 VALUES (?, ?, ?, ?, ?)
                                 ON CONFLICT (student_id, term, academic_year, school_id) DO NOTHING
-                            """, (student_id, term, academic_year, form_level, school_id))
+                            """, (student_id, term, academic_year, form_level, school_id), skip_lastval=True)
                         
                         # Save marks if available
                         if student_id and row_data.get('marks') and term and academic_year:
+                            marks_to_insert = []
                             for subject, mark in row_data['marks'].items():
-                                # Calculate grade based on mark and school settings
-                                grade = self.calculate_grade(mark, form_level, school_id)
-                                
-                                cursor.execute("""
+                                # Use preloaded grading rules for upload performance.
+                                grade = grade_from_rules(mark)
+                                marks_to_insert.append((student_id, subject, mark, grade, term, academic_year, form_level, school_id))
+                            
+                            if marks_to_insert:
+                                cursor.executemany("""
                                     INSERT INTO student_marks (student_id, subject, mark, grade, term, academic_year, form_level, school_id)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                     ON CONFLICT (student_id, subject, term, academic_year, school_id) 
                                     DO UPDATE SET mark = EXCLUDED.mark, grade = EXCLUDED.grade
-                                """, (student_id, subject, mark, grade, term, academic_year, form_level, school_id))
-                                mark_count += 1
+                                """, marks_to_insert)
+                                mark_count += len(marks_to_insert)
                         
                         cursor.execute("RELEASE SAVEPOINT student_upload")
                                 
@@ -1455,34 +1482,15 @@ class SchoolDatabase:
             raise
     
     def get_school_settings(self, school_id: int = None) -> Dict:
-        """Get current school settings including academic periods - isolated by school_id"""
-        try:
-            if not school_id:
-                # If no school_id provided, return blank settings
-                self.logger.warning("get_school_settings called without school_id, returning blank settings")
-                return {
-                    'school_name': '',
-                    'school_address': '',
-                    'school_phone': '',
-                    'school_email': '',
-                    'pta_fund': '',
-                    'sdf_fund': '',
-                    'boarding_fee': '',
-                    'next_term_begins': '',
-                    'boys_uniform': '',
-                    'girls_uniform': '',
-                    'selected_term': '',
-                    'selected_academic_year': '',
-                    'form_1_teacher_signature': '',
-                    'form_2_teacher_signature': '',
-                    'form_3_teacher_signature': '',
-                    'form_4_teacher_signature': '',
-                    'head_teacher_signature': '',
-                    'academic_years': [],
-                    'terms': [],
-                    'academic_periods': []
-                }
+        """Get current school settings including academic periods - isolated by school_id with caching."""
+        if not school_id:
+            return {}
             
+        # Check cache first
+        if hasattr(self, '_settings_cache') and school_id in self._settings_cache:
+            return self._settings_cache[school_id]
+            
+        try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -1543,6 +1551,11 @@ class SchoolDatabase:
                 settings['academic_years'] = academic_years
                 settings['terms'] = terms
                 settings['academic_periods'] = academic_periods
+                
+                # Update cache
+                if not hasattr(self, '_settings_cache'):
+                    self._settings_cache = {}
+                self._settings_cache[school_id] = settings
                 
                 return settings
                     
@@ -1703,33 +1716,61 @@ class SchoolDatabase:
                 all_students = cursor.fetchall()
                 rankings = []
                 
-                # For each student, get their marks data
+                # Get summary stats for ALL students in one query
+                if school_id:
+                    cursor.execute(f"""
+                        SELECT sm.student_id,
+                               AVG(sm.mark) as average,
+                               SUM(sm.mark) as total_marks,
+                               COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
+                               COUNT(sm.mark) as total_subjects
+                        FROM student_marks sm
+                        WHERE sm.form_level = %s AND sm.term = %s AND sm.academic_year = %s AND sm.school_id = %s
+                        GROUP BY sm.student_id
+                    """, (form_level, term, academic_year, school_id))
+                else:
+                    cursor.execute(f"""
+                        SELECT sm.student_id,
+                               AVG(sm.mark) as average,
+                               SUM(sm.mark) as total_marks,
+                               COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
+                               COUNT(sm.mark) as total_subjects
+                        FROM student_marks sm
+                        WHERE sm.form_level = %s AND sm.term = %s AND sm.academic_year = %s
+                        GROUP BY sm.student_id
+                    """, (form_level, term, academic_year))
+                
+                stats_map = {row[0]: row[1:] for row in cursor.fetchall()}
+                
+                # Pre-fetch ALL marks for the form to avoid queries in the loop
+                from collections import defaultdict
+                if school_id:
+                    cursor.execute("""
+                        SELECT student_id, subject, mark FROM student_marks
+                        WHERE form_level = %s AND term = %s AND academic_year = %s AND school_id = %s
+                    """, (form_level, term, academic_year, school_id))
+                else:
+                    cursor.execute("""
+                        SELECT student_id, subject, mark FROM student_marks
+                        WHERE form_level = %s AND term = %s AND academic_year = %s
+                    """, (form_level, term, academic_year))
+                
+                all_marks_rows = cursor.fetchall()
+                student_marks_map = defaultdict(list)
+                student_english_map = {}
+                for sid, sub, mark in all_marks_rows:
+                    student_marks_map[sid].append(mark)
+                    if sub == 'English':
+                        student_english_map[sid] = mark
+
+                rankings = []
+                # For each student, get their data from the maps
                 for student_id, first_name, last_name in all_students:
-                    # Get marks data for this student
-                    if school_id:
-                        cursor.execute(f"""
-                            SELECT AVG(sm.mark) as average,
-                                   SUM(sm.mark) as total_marks,
-                                   COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
-                                   COUNT(sm.mark) as total_subjects
-                            FROM student_marks sm
-                            WHERE sm.student_id = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
-                        """, (student_id, term, academic_year, school_id))
-                    else:
-                        cursor.execute(f"""
-                            SELECT AVG(sm.mark) as average,
-                                   SUM(sm.mark) as total_marks,
-                                   COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
-                                   COUNT(sm.mark) as total_subjects
-                            FROM student_marks sm
-                            WHERE sm.student_id = ? AND sm.term = ? AND sm.academic_year = ?
-                        """, (student_id, term, academic_year))
-                    
-                    marks_data = cursor.fetchone()
-                    average = marks_data[0] if marks_data and marks_data[0] is not None else 0
-                    total_marks = marks_data[1] if marks_data and marks_data[1] is not None else 0
-                    subjects_passed = marks_data[2] if marks_data else 0
-                    total_subjects = marks_data[3] if marks_data else 0
+                    marks_data = stats_map.get(student_id, (None, None, 0, 0))
+                    average = marks_data[0] if marks_data[0] is not None else 0
+                    total_marks = marks_data[1] if marks_data[1] is not None else 0
+                    subjects_passed = marks_data[2]
+                    total_subjects = marks_data[3]
                     
                     # Check if student wrote insufficient subjects (1-5)
                     if total_subjects <= 5:
@@ -1759,35 +1800,19 @@ class SchoolDatabase:
                             })
                         continue
                     
-                    # Check if English is passed (school-specific)
-                    if school_id:
-                        cursor.execute("""
-                            SELECT mark FROM student_marks 
-                            WHERE student_id = ? AND subject = 'English' AND term = ? AND academic_year = ? AND school_id = ?
-                        """, (student_id, term, academic_year, school_id))
-                    else:
-                        cursor.execute("""
-                            SELECT mark FROM student_marks 
-                            WHERE student_id = ? AND subject = 'English' AND term = ? AND academic_year = ?
-                        """, (student_id, term, academic_year))
-                    
-                    english_result = cursor.fetchone()
-                    english_mark = english_result[0] if english_result else 0
+                    # Check if English is passed
+                    english_mark = student_english_map.get(student_id, 0)
                     english_passed = self.is_english_passed(english_mark, form_level)
                     
                     # Determine status
                     status = self.determine_pass_fail_status(subjects_passed, english_passed)
                     
+                    # Get student marks for grade/points calculation
+                    marks = sorted(student_marks_map.get(student_id, []), reverse=True)
+                    
                     # Calculate aggregate points for Forms 3-4, keep grade for Forms 1-2
                     if form_level >= 3:
-                        # Get best 6 marks for aggregate points calculation
-                        cursor.execute("""
-                            SELECT mark FROM student_marks 
-                            WHERE student_id = ? AND term = ? AND academic_year = ?
-                            ORDER BY mark DESC LIMIT 6
-                        """, (student_id, term, academic_year))
-                        best_marks = [row[0] for row in cursor.fetchall()]
-                        
+                        best_marks = marks[:6]
                         grade_points = []
                         for mark in best_marks:
                             grade = self.calculate_grade(mark, form_level, school_id)
@@ -1810,13 +1835,6 @@ class SchoolDatabase:
                             grade = 'F'  # Failed students MUST get F grade
                         else:
                             # Passed students: find appropriate grade from their marks
-                            cursor.execute("""
-                                SELECT mark FROM student_marks 
-                                WHERE student_id = ? AND term = ? AND academic_year = ?
-                                ORDER BY mark DESC
-                            """, (student_id, term, academic_year))
-                            marks = [row[0] for row in cursor.fetchall()]
-                            
                             # Find the most common passing grade
                             passing_grades = [self.calculate_grade(mark, form_level, school_id) for mark in marks if self.is_subject_passed(mark, form_level)]
                             if passing_grades:

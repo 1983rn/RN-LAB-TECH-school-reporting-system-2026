@@ -51,8 +51,11 @@ if not app.secret_key:
     print('WARNING: Generated temporary SECRET_KEY; set SECRET_KEY env var for production')
 
 # Background Task Manager
-bg_executor = ThreadPoolExecutor(max_workers=4)
+# Background Task Manager - limited workers for production resource efficiency
+bg_executor = ThreadPoolExecutor(max_workers=2)
 task_status = {}  # {task_id: {"status": "pending|processing|completed|failed", "progress": 0, "message": ""}}
+single_export_tasks = {}  # {cache_key: {"status": "...", "updated_at": "...", "error": "..."}}
+single_export_lock = threading.Lock()
 
 def update_task_status(task_id, status, progress=0, message=""):
     task_status[task_id] = {
@@ -62,9 +65,43 @@ def update_task_status(task_id, status, progress=0, message=""):
         "updated_at": datetime.now().isoformat()
     }
 
-def background_report_generation(task_id, student_ids, term, academic_year, school_id):
-    """Worker function to generate reports in the background."""
+
+def _single_export_cache_key(school_id: int, student_id: int, term: str, academic_year: str) -> str:
+    """Build a stable cache key for one learner export."""
+    return f"{school_id}:{student_id}:{term}:{academic_year}"
+
+
+def _update_single_export_status(cache_key: str, status: str, error: str = ""):
+    with single_export_lock:
+        single_export_tasks[cache_key] = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(),
+            "error": error
+        }
+
+
+def _generate_single_export(cache_key: str, student_id: int, term: str, academic_year: str, school_id: int):
+    """Background worker that generates one cached learner PDF."""
     try:
+        _update_single_export_status(cache_key, "processing")
+        local_db = SchoolDatabase()
+        local_generator = TermlyReportGenerator(db=local_db)
+        file_path = local_generator.export_individual_report_to_pdf_file(student_id, term, academic_year, school_id)
+        if file_path and os.path.exists(file_path):
+            _update_single_export_status(cache_key, "completed")
+        else:
+            _update_single_export_status(cache_key, "failed", "Failed to generate report card PDF")
+    except Exception as exc:
+        app.logger.error(f"Single export generation failed for key {cache_key}: {exc}")
+        _update_single_export_status(cache_key, "failed", str(exc))
+
+def background_report_generation(task_id, student_ids, term, academic_year, school_id):
+    """Worker function to generate reports in the background with a delay."""
+    try:
+        # Crucial: Delay start to let main thread finish sending the response
+        import time
+        time.sleep(5)
+        
         update_task_status(task_id, "processing", progress=10, message="Starting generation...")
         
         db = SchoolDatabase()
@@ -84,12 +121,23 @@ def background_report_generation(task_id, student_ids, term, academic_year, scho
         
         # Step 2: Generate individual PDFs
         total = len(student_ids)
-        for i, sid in enumerate(student_ids):
-            progress = 30 + int((i / total) * 60)
-            update_task_status(task_id, "processing", progress=progress, message=f"Generating PDF {i+1} of {total}...")
+        # Limit auto-generation to prevent resource exhaustion on large uploads
+        # Users can always generate specific reports manually later
+        PROCESS_LIMIT = 150 
+        students_to_process = student_ids[:PROCESS_LIMIT]
+        
+        for i, sid in enumerate(students_to_process):
+            progress = 30 + int((i / len(students_to_process)) * 60)
+            update_task_status(task_id, "processing", progress=progress, message=f"Generating PDF {i+1} of {len(students_to_process)}...")
             generator.export_individual_report_to_pdf_file(sid, term, academic_year, school_id)
+            # Small delay to prevent CPU/Memory spikes
+            import time
+            time.sleep(0.2)
             
-        update_task_status(task_id, "completed", progress=100, message="All reports generated successfully.")
+        if total > PROCESS_LIMIT:
+            update_task_status(task_id, "completed", progress=100, message=f"Processed {PROCESS_LIMIT} of {total} students. Remaining students can be generated manually.")
+        else:
+            update_task_status(task_id, "completed", progress=100, message="All reports generated successfully.")
     except Exception as e:
         app.logger.error(f"Background generation failed: {e}")
         update_task_status(task_id, "failed", progress=0, message=str(e))
@@ -1332,39 +1380,94 @@ def api_export_report_card():
             print(f"DEBUG [PDF Export]: No marks found for student {student_id} in {term} {academic_year}")
             return jsonify({'success': False, 'message': 'No marks found for this student'}), 404
         
-        # Check cache first
+        # Check cache first, but auto-refresh when generator code changed.
         cached_path = db.get_report_card_path(student_id, term, academic_year, school_id)
+        generator_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'termly_report_generator.py')
+
+        cache_is_stale = True
         if cached_path and os.path.exists(cached_path):
-            print(f"DEBUG [PDF Export]: Serving cached PDF for student {student_id}")
-            return send_file(cached_path, mimetype='application/pdf', as_attachment=True, 
-                             download_name=f"Report_{student['first_name']}_{student['last_name']}.pdf")
+            try:
+                cache_mtime = os.path.getmtime(cached_path)
+                generator_mtime = os.path.getmtime(generator_path)
+                cache_is_stale = generator_mtime > cache_mtime
+            except OSError:
+                cache_is_stale = True
 
-        # If not cached, generate it synchronously (fallback)
-        pdf_bytes = generator.export_report_to_pdf_bytes(student_id, term, academic_year, school_id)
-        
-        if pdf_bytes and len(pdf_bytes) > 100:  # Valid PDFs are usually > 100 bytes
-            # Verify PDF signature (%PDF-)
-            if not pdf_bytes.startswith(b'%PDF-'):
-                 print(f"DEBUG [PDF Export]: Warning! Generated bytes for {student_id} do not start with %PDF- signature.")
-                 # Fallback to check if it's text
-                 if b'================' in pdf_bytes or b'Student Name:' in pdf_bytes:
-                     return jsonify({'success': False, 'message': 'Internal error: PDF generator returned text instead of PDF binary. Verify library installation.'}), 500
+            if not cache_is_stale:
+                print(f"DEBUG [PDF Export]: Serving cached PDF for student {student_id}")
+                return send_file(cached_path, mimetype='application/pdf', as_attachment=True,
+                                 download_name=f"Report_{student['first_name']}_{student['last_name']}.pdf")
+            print(f"DEBUG [PDF Export]: Cache stale for student {student_id}, regenerating PDF")
+        # Robust timeout-safe path:
+        # Never generate heavy PDFs inside this request. Trigger background generation
+        # and return immediately; browser can retry same URL until cached PDF is ready.
+        cache_key = _single_export_cache_key(school_id, student_id, term, academic_year)
+        with single_export_lock:
+            current_status = single_export_tasks.get(cache_key, {}).get("status")
+            should_start_job = current_status not in ("pending", "processing")
+            if should_start_job:
+                single_export_tasks[cache_key] = {
+                    "status": "pending",
+                    "updated_at": datetime.now().isoformat(),
+                    "error": ""
+                }
 
-            safe_name = f"{student['first_name']}_{student['last_name']}".replace(' ', '_')
-            filename = f"{safe_name}_Report_{term.replace(' ','_')}_{academic_year.replace('-','_')}.pdf"
-            
-            print(f"DEBUG [PDF Export]: Successfully generated {len(pdf_bytes)} bytes for {filename}")
-            
-            response = make_response(pdf_bytes)
-            response.headers['Content-Type'] = 'application/pdf'
-            response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+        if should_start_job:
+            print(f"DEBUG [PDF Export]: Starting background generation for {cache_key}")
+            bg_executor.submit(_generate_single_export, cache_key, student_id, term, academic_year, school_id)
+
+        # Re-check cache quickly in case generation completed between checks.
+        refreshed_path = db.get_report_card_path(student_id, term, academic_year, school_id)
+        if refreshed_path and os.path.exists(refreshed_path):
+            try:
+                refreshed_cache_mtime = os.path.getmtime(refreshed_path)
+                refreshed_generator_mtime = os.path.getmtime(generator_path)
+                if refreshed_generator_mtime <= refreshed_cache_mtime:
+                    print(f"DEBUG [PDF Export]: Serving freshly prepared cached PDF for student {student_id}")
+                    return send_file(refreshed_path, mimetype='application/pdf', as_attachment=True,
+                                     download_name=f"Report_{student['first_name']}_{student['last_name']}.pdf")
+            except OSError:
+                pass
+
+        with single_export_lock:
+            status_payload = single_export_tasks.get(cache_key, {"status": "pending", "error": ""})
+
+        if request.method == 'GET':
+            learner_name = f"{student['first_name']} {student['last_name']}"
+            # Lightweight retry page for window.open flows.
+            html = f"""
+            <!doctype html>
+            <html>
+              <head>
+                <meta charset="utf-8" />
+                <meta http-equiv="refresh" content="3" />
+                <title>Preparing Report Card</title>
+                <style>
+                  body {{ font-family: Arial, sans-serif; padding: 24px; color: #222; }}
+                  .status {{ max-width: 680px; line-height: 1.5; }}
+                </style>
+              </head>
+              <body>
+                <div class="status">
+                  <h3>Preparing report card...</h3>
+                  <p><strong>Learner:</strong> {learner_name}</p>
+                  <p><strong>Period:</strong> {term} {academic_year}</p>
+                  <p>The PDF is being generated in the background to avoid server timeout. This page will retry automatically and download once ready.</p>
+                  <p><strong>Status:</strong> {status_payload.get('status', 'pending')}</p>
+                </div>
+              </body>
+            </html>
+            """
+            response = make_response(html, 202)
+            response.headers['Content-Type'] = 'text/html; charset=utf-8'
+            response.headers['Retry-After'] = '3'
             return response
-        else:
-            print(f"DEBUG [PDF Export]: PDF generation returned invalid or empty content for student {student_id}")
-            return jsonify({
-                'success': False,
-                'message': 'Failed to generate PDF report - empty or invalid content. Please check server logs.'
-            }), 500
+
+        return jsonify({
+            'success': False,
+            'status': status_payload.get('status', 'pending'),
+            'message': 'Report card is being prepared in the background. Retry this request shortly.'
+        }), 202
         
     except Exception as e:
         import traceback
@@ -1778,12 +1881,20 @@ def api_upload_students_excel():
             duplicates_found = []
             rows_to_process = []
             
-            for index, row in df.iterrows():
-                first_name_raw = str(row[found_columns['First Name']]).strip()
-                last_name_raw = str(row[found_columns['Last Name']]).strip()
+            import re
+            whitespace_pat = re.compile(r'\s+')
+            def normalize_name_fast(name):
+                if not name or str(name).lower() == 'nan':
+                    return ""
+                return whitespace_pat.sub(' ', str(name)).strip().lower()
+
+            records = df.to_dict('records')
+            for row in records:
+                first_name_raw = str(row.get(found_columns['First Name'], '')).strip()
+                last_name_raw = str(row.get(found_columns['Last Name'], '')).strip()
                 
-                first_name_norm = normalize_name(first_name_raw)
-                last_name_norm = normalize_name(last_name_raw)
+                first_name_norm = normalize_name_fast(first_name_raw)
+                last_name_norm = normalize_name_fast(last_name_raw)
                 
                 if not first_name_norm or not last_name_norm:
                     continue
@@ -1798,7 +1909,7 @@ def api_upload_students_excel():
                 # Capture marks for this row
                 row_marks = {}
                 for subject, col_name in subject_columns.items():
-                    mark = row[col_name]
+                    mark = row.get(col_name)
                     if pd.notnull(mark):
                         try:
                             mark_val = int(float(mark))

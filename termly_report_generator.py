@@ -26,7 +26,7 @@ from school_database import SchoolDatabase, DEFAULT_JUNIOR_GRADING, DEFAULT_SENI
 # PDF Generation Imports
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageTemplate, Frame, PageBreak, KeepInFrame
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -799,6 +799,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
         Uses batch_context if provided to achieve zero-query performance.
         """
         try:
+            section_start_index = len(story)
             # 1. --- Data Retrieval (Memory vs Database) ---
             if batch_context:
                 student = batch_context['students_map'].get(student_id)
@@ -837,19 +838,19 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Malawi Government logo.png')
             if os.path.exists(logo_path):
                 try:
-                    logo = Image(logo_path, width=0.8*inch, height=0.8*inch)
+                    logo = Image(logo_path, width=0.6*inch, height=0.6*inch)
                     story.append(logo)
-                    story.append(Spacer(1, 4))
+                    story.append(Spacer(1, 2))
                 except Exception:
                     pass
 
-            school_name_style = ParagraphStyle('SchoolName', parent=styles['Heading1'], fontSize=16, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-            address_style = ParagraphStyle('Address', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-            progress_style = ParagraphStyle('Progress', parent=styles['Heading1'], fontSize=14, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
-            normal_style = ParagraphStyle('NormalCustom', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=colors.black)
+            school_name_style = ParagraphStyle('SchoolName', parent=styles['Heading1'], fontSize=14, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            address_style = ParagraphStyle('Address', parent=styles['Normal'], fontSize=9, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            progress_style = ParagraphStyle('Progress', parent=styles['Heading1'], fontSize=12, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.black)
+            normal_style = ParagraphStyle('NormalCustom', parent=styles['Normal'], fontSize=8.5, fontName='Helvetica', textColor=colors.black)
             footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=7, alignment=TA_CENTER)
 
-            spacing = 2 if form_level >= 3 else 4
+            spacing = 1 if form_level >= 3 else 2
 
             # --- 2. School Header ---
             story.append(Paragraph(f"<b>{school_name}</b>", school_name_style))
@@ -988,9 +989,9 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             table_style = [
                 ('ALIGN', (0,0), (-1,-1), 'LEFT'),
                 ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0,0), (-1,-1), 10),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
                 ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 1),
             ]
             
             # Span the first 6 rows across columns 1-3
@@ -1040,7 +1041,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
 
             # Expanded table widths to fill 7.0 inches (between 0.6" margins)
             # Subject(1.8), Marks(0.7), Grade(0.7), Pos(0.8), Comment(1.5), signature(1.5) = 7.0"
-            marks_table = Table(table_data, colWidths=[1.8*inch, 0.7*inch, 0.7*inch, 0.8*inch, 1.5*inch, 1.5*inch], hAlign='LEFT')
+            marks_table = Table(table_data, colWidths=[1.8*inch, 0.6*inch, 0.6*inch, 0.8*inch, 1.5*inch, 1.7*inch], hAlign='LEFT')
             marks_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -1048,7 +1049,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                 ('ALIGN', (4, 1), (4, -1), 'LEFT'),
                 ('ALIGN', (5, 1), (5, -1), 'LEFT'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightyellow]),
             ]))
@@ -1056,28 +1057,35 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             story.append(Spacer(1, 4))
 
             # Calculate dynamic sizing for lower section based on subject count
-            num_subjects = len(self.standard_subjects)
+            num_subjects = len(marks)
             if num_subjects >= 14:
                 b_space = 0
-                f_size = 10
-                f_leading = 12
+                f_size = 8.5
+                f_leading = 10
             elif num_subjects >= 12:
                 b_space = 1
-                f_size = 11
-                f_leading = 13
+                f_size = 9
+                f_leading = 11
             else:
                 b_space = 2
-                f_size = 11
-                f_leading = 13
+                f_size = 10
+                f_leading = 12
                 
             dynamic_style = ParagraphStyle('DynamicNormal', parent=styles['Normal'], fontSize=f_size, leading=f_leading, fontName='Helvetica', textColor=colors.black)
+            # Smaller style for content below the subjects table so all forms fit one page.
+            lower_section_style = ParagraphStyle(
+                'LowerSection',
+                parent=dynamic_style,
+                fontSize=max(6.2, f_size - 2.0),
+                leading=max(7.2, f_leading - 2.0)
+            )
 
             # --- 5. Grading Key (BELOW TABLE) ---
             grading_str = self._build_grading_string(form_level, school_id)
             if form_level <= 2:
-                story.append(Paragraph(f"<b>GRADING:</b> {grading_str}", dynamic_style))
+                story.append(Paragraph(f"<b>GRADING:</b> {grading_str}", lower_section_style))
             else:
-                story.append(Paragraph(f"<b>MSCE GRADING:</b> {grading_str}", dynamic_style))
+                story.append(Paragraph(f"<b>MSCE GRADING:</b> {grading_str}", lower_section_style))
             story.append(Spacer(1, b_space))
 
             # --- 6. Teacher Comments & Signatures ---
@@ -1100,26 +1108,27 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                     form_comment = f"Failed: Aggregate points ({points}). More effort needed in all subjects."
                     head_comment = "Work hard next term to improve these grades."
 
-            story.append(Paragraph(f"<b>FORM TEACHERS' COMMENT:</b> {form_comment}", dynamic_style))
+            story.append(Paragraph(f"<b>FORM TEACHERS' COMMENT:</b> {form_comment}", lower_section_style))
             story.append(Spacer(1, b_space))
             
             # Form Teacher's Signature (Label and Image on same line)
             ft_sig_field = f"form_{form_level}_teacher_signature"
             ft_sig_path = settings.get(ft_sig_field)
             
-            ft_sig_content = Paragraph(f"________________________", dynamic_style)
+            ft_sig_content = Paragraph(f"________________________", lower_section_style)
             if ft_sig_path and os.path.exists(ft_sig_path):
                 try:
                     img = Image(ft_sig_path)
                     aspect = img.imageHeight / img.imageWidth
-                    img.drawWidth = 1.0 * inch
-                    img.drawHeight = (1.0 * aspect) * inch
+                    # Intentionally smaller as requested to save lower-section space.
+                    img.drawWidth = 0.55 * inch
+                    img.drawHeight = (0.55 * aspect) * inch
                     ft_sig_content = img
                 except Exception as e:
                     logger.error(f"Error loading form teacher signature: {e}")
             
             ft_sig_table = Table([
-                [Paragraph(f"<b>Form Teacher's Signature:</b>", dynamic_style), ft_sig_content]
+                [Paragraph(f"<b>Form Teacher's Signature:</b>", lower_section_style), ft_sig_content]
             ], colWidths=[2.2*inch, 4*inch])
             ft_sig_table.setStyle(TableStyle([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1130,12 +1139,12 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             
             story.append(Spacer(1, b_space))
             
-            story.append(Paragraph(f"<b>HEAD TEACHERS' COMMENT:</b> {head_comment}", dynamic_style))
+            story.append(Paragraph(f"<b>HEAD TEACHERS' COMMENT:</b> {head_comment}", lower_section_style))
             story.append(Spacer(1, b_space))
             
             # Head Teacher's Signature (Label and Image on same line)
             ht_sig_path = settings.get('head_teacher_signature')
-            ht_sig_content = Paragraph(f"________________________", dynamic_style)
+            ht_sig_content = Paragraph(f"________________________", lower_section_style)
             if ht_sig_path and os.path.exists(ht_sig_path):
                 try:
                     img = Image(ht_sig_path)
@@ -1147,7 +1156,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                     logger.error(f"Error loading head teacher signature: {e}")
             
             ht_sig_table = Table([
-                [Paragraph(f"<b>Head Teacher's Signature:</b>", dynamic_style), ht_sig_content]
+                [Paragraph(f"<b>Head Teacher's Signature:</b>", lower_section_style), ht_sig_content]
             ], colWidths=[2.2*inch, 4*inch])
             ht_sig_table.setStyle(TableStyle([
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1158,24 +1167,52 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             
             story.append(Spacer(1, b_space))
 
-            # --- 7. Footer Info (from Settings) ---
+            # --- 7. Footer Info (Consolidated Table) ---
             next_term_text = next_term_begins if next_term_begins else '[DATE NOT SET]'
-            story.append(Paragraph(f"<b>NEXT TERM BEGINS ON:</b> {next_term_text}", dynamic_style))
-            story.append(Spacer(1, b_space))
-            
             boarding_text = boarding_fee if boarding_fee else 'MK [AMOUNT]'
-            story.append(Paragraph(f"<b>FEES - BOARDING FEE:</b> {boarding_text}", dynamic_style))
-            story.append(Spacer(1, b_space))
+            girls_text = girls_uniform if girls_uniform else '[DESC]'
+            boys_text = boys_uniform if boys_uniform else '[DESC]'
             
-            girls_text = girls_uniform if girls_uniform else '[UNIFORM NOT SPECIFIED]'
-            story.append(Paragraph(f"<b>UNIFORM - GIRLS:</b> {girls_text}", dynamic_style))
-            story.append(Spacer(1, b_space))
+            footer_data = [
+                [Paragraph(f"<b>NEXT TERM BEGINS ON:</b> {next_term_text}", lower_section_style),
+                 Paragraph(f"<b>FEES - BOARDING FEE:</b> {boarding_text}", lower_section_style)],
+                [Paragraph(f"<b>UNIFORM - GIRLS:</b> {girls_text}", lower_section_style),
+                 Paragraph(f"<b>UNIFORM - BOYS:</b> {boys_text}", lower_section_style)]
+            ]
+            footer_table = Table(footer_data, colWidths=[3.5*inch, 3.5*inch])
+            footer_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (0, -1), 4),
+                ('LEFTPADDING', (1, 0), (1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                # Vertical divider between the two footer columns for readability.
+                ('LINEBEFORE', (1, 0), (1, -1), 0.6, colors.black),
+                # Horizontal row separator to improve line-by-line readability.
+                ('LINEABOVE', (0, 1), (-1, 1), 0.5, colors.black),
+            ]))
+            story.append(footer_table)
+            story.append(Spacer(1, 2))
             
-            boys_text = boys_uniform if boys_uniform else '[UNIFORM NOT SPECIFIED]'
-            story.append(Paragraph(f"<b>UNIFORM - BOYS:</b> {boys_text}", dynamic_style))
-            story.append(Spacer(1, b_space))
-            
-            story.append(Paragraph(f"Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
+            generated_by_style = ParagraphStyle(
+                'GeneratedBy',
+                parent=footer_style,
+                fontSize=max(6.0, lower_section_style.fontSize - 0.5)
+            )
+            story.append(Paragraph(f"Generated by: RN_LAB_TECH on {datetime.now().strftime('%d/%m/%Y %H:%M')}", generated_by_style))
+
+            # Keep each learner report on a single page by shrinking proportionally only when needed.
+            student_section = story[section_start_index:]
+            if student_section:
+                keep_on_one_page = KeepInFrame(
+                    A4[0] - 1.2 * inch,
+                    A4[1] - 1.2 * inch,
+                    student_section,
+                    mode='shrink',
+                    mergeSpace=1
+                )
+                del story[section_start_index:]
+                story.append(keep_on_one_page)
 
             return True
 
@@ -1199,14 +1236,11 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(report_card)
-                print(f"✅ Report card exported to: {filename}")
                 return filename
             except Exception as e:
-                print(f"❌ Error exporting report: {e}")
+                self.logger.error(f"Error exporting report to file: {e}")
                 return None
-        else:
-            print("❌ No report data to export")
-            return None
+        return None
     
     def _get_school_serial_prefix(self, school_name: str) -> str:
         """Derive a school-specific prefix for serial numbers based on user examples."""
@@ -1296,12 +1330,25 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
         try:
             from pypdf import PdfWriter, PdfReader
             writer = PdfWriter()
+            generator_path = os.path.abspath(__file__)
+            try:
+                generator_mtime = os.path.getmtime(generator_path)
+            except OSError:
+                generator_mtime = 0
             
             found_any = False
             for student_id in student_ids:
                 file_path = self.db.get_report_card_path(student_id, term, academic_year, school_id)
-                if not file_path or not os.path.exists(file_path):
-                    # If not cached, generate it on the fly and cache it
+                needs_regeneration = True
+                if file_path and os.path.exists(file_path):
+                    try:
+                        cache_mtime = os.path.getmtime(file_path)
+                        needs_regeneration = generator_mtime > cache_mtime
+                    except OSError:
+                        needs_regeneration = True
+
+                if needs_regeneration:
+                    # If cache is missing/stale, regenerate and cache with current layout.
                     file_path = self.export_individual_report_to_pdf_file(student_id, term, academic_year, school_id)
                 
                 if file_path and os.path.exists(file_path):
