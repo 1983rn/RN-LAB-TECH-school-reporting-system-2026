@@ -105,11 +105,7 @@
                         <input type="text" class="form-control" id="boysUniform" value="{{ settings.boys_uniform if settings and settings.boys_uniform is not none and settings.boys_uniform else '' }}" required>
                     </div>
                     
-                    <div class="d-grid">
-                        <button type="button" class="btn btn-info" onclick="updateSettings(this)">
-                            <i class="fas fa-save me-2"></i>Update Settings
-                        </button>
-                    </div>
+                    <!-- Unified save button moved to bottom of page -->
                 </form>
             </div>
         </div>
@@ -160,7 +156,11 @@
                         {% endif %}
                     </label>
                     <div id="preview_{{ stype_id }}" class="mb-2 {% if not current_sig %}d-none{% endif %}">
+                        {% if current_sig and current_sig.startswith('data:') %}
+                        <img src="{{ current_sig }}" style="max-height: 40px; border: 1px dashed #ccc; padding: 2px; background: white;">
+                        {% else %}
                         <img src="/{{ current_sig }}" style="max-height: 40px; border: 1px dashed #ccc; padding: 2px; background: white;">
+                        {% endif %}
                     </div>
                     <div class="input-group input-group-sm">
                         <input type="file" class="form-control" id="file_{{ stype_id }}" accept="image/*">
@@ -174,11 +174,7 @@
                 </div>
                 {% endfor %}
                 
-                <div class="d-grid mt-3 pt-3 border-top">
-                    <button type="button" class="btn btn-primary" onclick="saveDigitalSignatures(this)" id="saveSignaturesBtn">
-                        <i class="fas fa-save me-2"></i>Save Digital Signatures
-                    </button>
-                </div>
+                <!-- Digital signatures are saved automatically on upload -->
             </div>
         </div>
     </div>
@@ -225,7 +221,6 @@
                                     <tr>
                                         <th>Subject</th>
                                         <th>Teacher Name</th>
-                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody id="teachersTableBody1">
@@ -260,7 +255,6 @@
                                     <tr>
                                         <th>Subject</th>
                                         <th>Teacher Name</th>
-                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody id="teachersTableBody2">
@@ -294,7 +288,6 @@
                                     <tr>
                                         <th>Subject</th>
                                         <th>Teacher Name</th>
-                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody id="teachersTableBody3">
@@ -328,7 +321,6 @@
                                     <tr>
                                         <th>Subject</th>
                                         <th>Teacher Name</th>
-                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody id="teachersTableBody4">
@@ -356,8 +348,14 @@
                     </div>
                 </div>
 
-                <div class="mt-3 d-flex justify-content-end">
-                    <button class="btn btn-success" onclick="updateSettings(this)"><i class="fas fa-save me-2"></i>Update Settings</button>
+                </div>
+
+                <!-- Unified Save Button -->
+                <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center">
+                    <div class="text-muted small"><i class="fas fa-info-circle me-1"></i>Digital signatures save automatically when uploaded.</div>
+                    <button class="btn btn-success btn-lg px-5 shadow-sm" onclick="updateSettings(this)" id="mainSaveBtn">
+                        <i class="fas fa-save me-2"></i>Save All Settings
+                    </button>
                 </div>
             </div>
         </div>
@@ -466,14 +464,7 @@ function loadSubjectTeachers(formLevel) {
                         <input type="text" class="form-control form-control-sm" 
                                id="${inputId}" 
                                value="${teacherName}" 
-                               placeholder="Enter Teacher name" disabled>
-                    </td>
-                    <td>
-                        <div class="btn-group" role="group">
-                            <button class="btn btn-sm btn-secondary" onclick="editSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-edit"></i> Edit</button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-trash"></i> Delete</button>
-                            <button class="btn btn-sm btn-primary d-none" id="saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}" onclick="saveSubjectRow(${formLevel}, '${subject}', this)"><i class="fas fa-save"></i> Save</button>
-                        </div>
+                               placeholder="Enter Teacher name">
                     </td>
                 `;
                 tbody.appendChild(row);
@@ -485,95 +476,6 @@ function loadSubjectTeachers(formLevel) {
     });
 }
 
-function updateSubjectTeacher(subject, formLevel, buttonElement) {
-    const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const teacherName = document.getElementById(inputId).value.trim();
-    
-    if (!teacherName) {
-        alert('Please enter a teacher name');
-        return;
-    }
-    
-    fetch('/api/update-subject-teacher', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            subject: subject,
-            form_level: formLevel,
-            teacher_name: teacherName
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            // Disable input and toggle buttons
-            const input = document.getElementById(inputId);
-            input.disabled = true;
-
-            const saveBtnId = `saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            const saveBtn = document.getElementById(saveBtnId);
-            if (saveBtn) saveBtn.classList.add('d-none');
-
-            const editButtons = document.querySelectorAll(`button[onclick^="editSubjectRow(${formLevel}, '${subject}'`);
-            // Show edit button(s) again
-            editButtons.forEach(b => b.classList.remove('d-none'));
-
-            // Brief success flash
-            saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
-            setTimeout(() => { if (saveBtn) saveBtn.innerHTML = '<i class="fas fa-save"></i> Save'; }, 1000);
-        } else {
-            alert('Error: ' + data.message);
-        }
-    })
-    .catch(error => {
-        alert('Error updating teacher: ' + error.message);
-    });
-}
-
-function editSubjectRow(formLevel, subject, buttonEl) {
-    const inputId = `teacher_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const input = document.getElementById(inputId);
-    const saveBtnId = `saveBtn_${formLevel}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const saveBtn = document.getElementById(saveBtnId);
-
-    input.disabled = false;
-    input.focus();
-    buttonEl.classList.add('d-none');
-    if (saveBtn) saveBtn.classList.remove('d-none');
-}
-
-function saveSubjectRow(formLevel, subject, buttonEl) {
-    // reuse update handler (buttonEl is the Save button)
-    updateSubjectTeacher(subject, formLevel, buttonEl);
-}
-
-function deleteSubjectRow(formLevel, subject, buttonEl) {
-    if (!confirm(`Delete assignment for ${subject} (Form ${formLevel})? This will remove the teacher assignment for this school.`)) {
-        return;
-    }
-
-    fetch('/api/delete-subject-teacher', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: subject, form_level: formLevel })
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            // remove row from table
-            const row = buttonEl.closest('tr');
-            if (row) row.parentNode.removeChild(row);
-        } else {
-            alert('Error deleting assignment: ' + data.message);
-        }
-    })
-    .catch(err => {
-        console.error('Error deleting subject teacher:', err);
-        alert('Error deleting assignment');
-    });
-}
 
 function loadPeriodsWithData() {
     fetch('/api/get-available-periods')
@@ -658,6 +560,22 @@ function updateSettings(clickedButton) {
         btn.disabled = true;
     });
 
+    // Gather subject teachers
+    const subjectTeachers = { '1': {}, '2': {}, '3': {}, '4': {} };
+    for (let formLevel = 1; formLevel <= 4; formLevel++) {
+        const subjects = ['Agriculture', 'Bible Knowledge', 'Biology', 'Chemistry', 
+                         'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography', 
+                         'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Business Studies', 'Home Economics'];
+        subjects.forEach(subject => {
+            const safeId = subject.replace(/[^a-zA-Z0-9]/g, '_');
+            const inputId = `teacher_${formLevel}_${safeId}`;
+            const inputEl = document.getElementById(inputId);
+            if (inputEl) {
+                subjectTeachers[formLevel][subject] = inputEl.value;
+            }
+        });
+    }
+
     fetch('/api/update-settings', {
         method: 'POST',
         headers: {
@@ -673,7 +591,8 @@ function updateSettings(clickedButton) {
             girls_uniform: girlsUniform,
             boys_uniform: boysUniform,
             selected_term: selectedTerm,
-            selected_academic_year: selectedYear
+            selected_academic_year: selectedYear,
+            subject_teachers: subjectTeachers
         })
     })
     .then(response => response.json())
@@ -687,36 +606,37 @@ function updateSettings(clickedButton) {
         });
         
         if (data.success) {
-            // Show success message - try to find settingsForm, otherwise use a parent container
-            let alertContainer = document.getElementById('settingsForm');
-            if (!alertContainer) {
-                // If settingsForm not found, use the first card-body or the clicked button's parent
-                alertContainer = clickedButton ? clickedButton.closest('.card-body') || clickedButton.closest('.card') : document.querySelector('.card-body');
-            }
+            // Find the main Save All Settings button container to append the success message near it
+            const mainSaveBtn = document.getElementById('mainSaveBtn');
+            const alertContainer = mainSaveBtn ? mainSaveBtn.parentElement : document.querySelector('.card-body');
             
             if (alertContainer) {
                 // Remove any existing success alerts
-                const existingAlerts = alertContainer.querySelectorAll('.alert-success');
+                const existingAlerts = document.querySelectorAll('.alert-success');
                 existingAlerts.forEach(alert => alert.remove());
                 
                 const alertDiv = document.createElement('div');
-                alertDiv.className = 'alert alert-success alert-dismissible fade show mt-3';
+                alertDiv.className = 'alert alert-success alert-dismissible fade show w-100 mt-3 shadow-sm';
                 alertDiv.innerHTML = `
-                    <i class="fas fa-check-circle me-2"></i>${data.message}
+                    <i class="fas fa-check-circle me-2"></i><strong>Success!</strong> All the information entered in the settings has been successfully saved.
                     <br><small class="text-muted">Note: If you have Data Entry or Ranking Analysis pages open, refresh them to see the updated settings.</small>
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 `;
-                alertContainer.appendChild(alertDiv);
                 
-                // Auto-hide after 5 seconds (longer to read the note)
+                // Insert after the button container
+                alertContainer.insertAdjacentElement('afterend', alertDiv);
+                
+                // Also scroll slightly to ensure it's fully visible
+                alertDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+                // Auto-hide after 5 seconds
                 setTimeout(() => {
                     if (alertDiv.parentNode) {
                         alertDiv.remove();
                     }
                 }, 5000);
             } else {
-                // Fallback to alert if we can't find a container
-                alert('Settings updated successfully!');
+                alert('All the information entered in the settings has been successfully saved.');
             }
             
             // Reload periods data to show any new periods
@@ -766,7 +686,11 @@ function uploadSignature(type, buttonEl) {
             // Update preview
             const previewDiv = document.getElementById(`preview_${type}`);
             const imgEl = previewDiv.querySelector('img');
-            imgEl.src = '/' + data.path + '?v=' + new Date().getTime(); // Anti-cache
+            if (data.path && data.path.startsWith('data:')) {
+                imgEl.src = data.path;
+            } else {
+                imgEl.src = '/' + data.path + '?v=' + new Date().getTime(); // Anti-cache
+            }
             previewDiv.classList.remove('d-none');
             
             // Clear input

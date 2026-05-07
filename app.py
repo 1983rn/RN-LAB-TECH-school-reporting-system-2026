@@ -2045,28 +2045,23 @@ def api_upload_signature():
             return jsonify({'success': False, 'message': 'Invalid signature type'}), 400
 
         if file and allowed_file(file.filename):
-            # Extract extension
-            ext = file.filename.rsplit('.', 1)[1].lower()
-            filename = secure_filename(f"{sig_type}_{school_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}")
+            import base64
+            # Read file content and encode to base64
+            file_content = file.read()
+            base64_encoded = base64.b64encode(file_content).decode('utf-8')
             
-            # Ensure folder for this school exists
-            school_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(school_id))
-            os.makedirs(school_folder, exist_ok=True)
-            
-            file_path = os.path.join(school_folder, filename)
-            file.save(file_path)
-            
-            # Relative path for web access and DB storage
-            relative_path = f"static/uploads/signatures/{school_id}/{filename}"
+            # Create Data URI
+            mime_type = file.mimetype or 'image/png'
+            data_uri = f"data:{mime_type};base64,{base64_encoded}"
             
             # Update database
             db_field = f"{sig_type}_signature" if sig_type == 'head_teacher' else f"{sig_type}_teacher_signature"
-            db.update_school_settings({db_field: relative_path}, school_id)
+            db.update_school_settings({db_field: data_uri}, school_id)
             
             return jsonify({
                 'success': True, 
                 'message': 'Signature uploaded successfully',
-                'path': relative_path
+                'path': data_uri
             })
         else:
             return jsonify({'success': False, 'message': 'Allowed file types: png, jpg, jpeg'}), 400
@@ -2122,6 +2117,19 @@ def api_update_school_settings():
         
         # Update school settings
         db.update_school_settings(data, school_id)
+        
+        # Process subject teachers if provided in data
+        if 'subject_teachers' in data:
+            for form_level_str, subjects_data in data['subject_teachers'].items():
+                try:
+                    form_level = int(form_level_str)
+                    for subject, teacher_name in subjects_data.items():
+                        if teacher_name and str(teacher_name).strip():
+                            db.update_subject_teacher(subject, form_level, str(teacher_name).strip(), school_id)
+                        else:
+                            db.delete_subject_teacher(subject, form_level, school_id)
+                except ValueError:
+                    continue
         
         return jsonify({
             'success': True,

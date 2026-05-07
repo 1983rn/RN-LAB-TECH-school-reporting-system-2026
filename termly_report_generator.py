@@ -102,6 +102,10 @@ class TermlyReportGenerator:
         if not raw_path:
             return None
 
+        # Accept Data URIs directly
+        if raw_path.startswith('data:'):
+            return raw_path
+
         # Accept absolute paths directly.
         if os.path.isabs(raw_path):
             return raw_path
@@ -1140,14 +1144,24 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             ft_sig_path = self._resolve_signature_file_path(settings.get(ft_sig_field))
             
             ft_sig_content = Paragraph(f"________________________", lower_section_style)
-            if ft_sig_path and os.path.exists(ft_sig_path):
+            if ft_sig_path:
+                img = None
                 try:
-                    img = Image(ft_sig_path)
-                    aspect = img.imageHeight / img.imageWidth
-                    # Intentionally smaller as requested to save lower-section space.
-                    img.drawWidth = 0.55 * inch
-                    img.drawHeight = (0.55 * aspect) * inch
-                    ft_sig_content = img
+                    if ft_sig_path.startswith('data:'):
+                        import base64, io
+                        if "," in ft_sig_path:
+                            header, encoded = ft_sig_path.split(",", 1)
+                            img_data = base64.b64decode(encoded)
+                            img = Image(io.BytesIO(img_data))
+                    elif os.path.exists(ft_sig_path):
+                        img = Image(ft_sig_path)
+                    
+                    if img:
+                        aspect = img.imageHeight / img.imageWidth
+                        # Intentionally smaller as requested to save lower-section space.
+                        img.drawWidth = 0.55 * inch
+                        img.drawHeight = (0.55 * aspect) * inch
+                        ft_sig_content = img
                 except Exception as e:
                     logger.error(f"Error loading form teacher signature: {e}")
             
@@ -1169,13 +1183,23 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             # Head Teacher's Signature (Label and Image on same line)
             ht_sig_path = self._resolve_signature_file_path(settings.get('head_teacher_signature'))
             ht_sig_content = Paragraph(f"________________________", lower_section_style)
-            if ht_sig_path and os.path.exists(ht_sig_path):
+            if ht_sig_path:
+                img = None
                 try:
-                    img = Image(ht_sig_path)
-                    aspect = img.imageHeight / img.imageWidth
-                    img.drawWidth = 1.0 * inch
-                    img.drawHeight = (1.0 * aspect) * inch
-                    ht_sig_content = img
+                    if ht_sig_path.startswith('data:'):
+                        import base64, io
+                        if "," in ht_sig_path:
+                            header, encoded = ht_sig_path.split(",", 1)
+                            img_data = base64.b64decode(encoded)
+                            img = Image(io.BytesIO(img_data))
+                    elif os.path.exists(ht_sig_path):
+                        img = Image(ht_sig_path)
+                    
+                    if img:
+                        aspect = img.imageHeight / img.imageWidth
+                        img.drawWidth = 1.0 * inch
+                        img.drawHeight = (1.0 * aspect) * inch
+                        ht_sig_content = img
                 except Exception as e:
                     logger.error(f"Error loading head teacher signature: {e}")
             
