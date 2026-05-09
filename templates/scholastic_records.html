@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}Scholastic Records - Malawi School Reporting System{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-file-contract me-2"></i>Scholastic Records</h2>
+        <p class="text-muted">Generate printable scholastic records for students to be filled by form teachers</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <ul class="nav nav-tabs mb-4" id="scholasticTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button" role="tab" aria-controls="single" aria-selected="true">
+                    <i class="fas fa-user me-2"></i>Single Record
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="bulk-tab" data-bs-toggle="tab" data-bs-target="#bulk" type="button" role="tab" aria-controls="bulk" aria-selected="false">
+                    <i class="fas fa-file-excel me-2"></i>Bulk Excel Export
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="scholasticTabsContent">
+            <!-- Single Record Tab -->
+            <div class="tab-pane fade show active" id="single" role="tabpanel" aria-labelledby="single-tab">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-primary text-white py-3">
+                        <h5 class="mb-0"><i class="fas fa-id-card me-2"></i>Individual Scholastic Record</h5>
+                    </div>
+                    <div class="card-body p-4">
+                        <form id="recordForm" onsubmit="event.preventDefault(); printRecord();">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="formSelect" class="form-label fw-bold">Current Form Level</label>
+                                    <select class="form-select" id="formSelect" required onchange="filterStudents()">
+                                        <option value="">Select Form...</option>
+                                        <option value="1">Form 1</option>
+                                        <option value="2">Form 2</option>
+                                        <option value="3">Form 3</option>
+                                        <option value="4">Form 4</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="academicYear" class="form-label fw-bold">Academic Year</label>
+                                    <select class="form-select" id="academicYear" required>
+                                        {% for y in academic_years %}
+                                        <option value="{{ y }}" {% if y == selected_academic_year %}selected{% endif %}>{{ y }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label for="studentSelect" class="form-label fw-bold">Select Student</label>
+                                <select class="form-select form-select-lg" id="studentSelect" required disabled style="appearance: auto; -webkit-appearance: menulist; -moz-appearance: menulist;">
+                                    <option value="">Select Form first...</option>
+                                </select>
+                            </div>
+                            
+                            <div class="d-grid">
+                                <a id="printBtn" href="#" class="btn btn-primary btn-lg" onclick="printRecord(event)">
+                                    <i class="fas fa-print me-2"></i>Open Scholastic Record
+                                </a>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                <div class="card mt-4 shadow-sm border-0 border-start border-4 border-info">
+                    <div class="card-body py-3" id="studentSummary">
+                        <div class="d-flex align-items-center text-muted">
+                            <i class="fas fa-info-circle fa-2x me-3"></i>
+                            <span>Select a student above to preview their basic details before printing.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bulk Export Tab -->
+            <div class="tab-pane fade" id="bulk" role="tabpanel" aria-labelledby="bulk-tab">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-success text-white py-3">
+                        <h5 class="mb-0"><i class="fas fa-file-excel me-2"></i>Export Full Class Record</h5>
+                    </div>
+                    <div class="card-body p-4 text-center">
+                        <div class="mb-4">
+                            <i class="fas fa-file-csv fa-4x text-success opacity-25"></i>
+                        </div>
+                        <p class="lead">Download a comprehensive Excel workbook containing persistent biographical data and marks for an entire form.</p>
+                        
+                        <form id="bulkExportForm" onsubmit="event.preventDefault(); exportBulkExcel();">
+                            <div class="row justify-content-center">
+                                <div class="col-md-8">
+                                    <div class="row text-start">
+                                        <div class="col-md-6 mb-3">
+                                            <label for="bulkFormSelect" class="form-label fw-bold">Form Level</label>
+                                            <select class="form-select" id="bulkFormSelect" required>
+                                                <option value="1">Form 1</option>
+                                                <option value="2">Form 2</option>
+                                                <option value="3">Form 3</option>
+                                                <option value="4">Form 4</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label for="bulkYearSelect" class="form-label fw-bold">Academic Year</label>
+                                            <select class="form-select" id="bulkYearSelect" required>
+                                                {% for y in academic_years %}
+                                                <option value="{{ y }}" {% if y == selected_academic_year %}selected{% endif %}>{{ y }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-info small text-start mt-2">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        This export includes biographical info (tribes, Taft, ta, Ta, taur etc.) and all termly marks for every student in the selected class.
+                                    </div>
+                                    
+                                    <div class="d-grid mt-4">
+                                        <button type="submit" class="btn btn-success btn-lg" id="bulkExportBtn">
+                                            <i class="fas fa-download me-2"></i>Generate Excel Report
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allStudents = [];
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Reload student list when academic year changes
+    document.getElementById('academicYear').addEventListener('change', function() {
+        const formLevel = document.getElementById('formSelect').value;
+        if (formLevel) {
+            loadStudentsForForm(formLevel);
+        }
+    });
+});
+
+function filterStudents() {
+    const formLevel = document.getElementById('formSelect').value;
+    const select = document.getElementById('studentSelect');
+    
+    if (!formLevel) {
+        select.innerHTML = '<option value="">Select Form first...</option>';
+        select.disabled = true;
+        document.getElementById('studentSummary').innerHTML = '<p class="text-muted">Select a student to view details</p>';
+        return;
+    }
+    
+    // Fetch students for this specific form from the server
+    loadStudentsForForm(formLevel);
+}
+
+function loadStudentsForForm(formLevel) {
+    const select = document.getElementById('studentSelect');
+    const academicYear = document.getElementById('academicYear').value;
+    
+    select.disabled = true;
+    select.innerHTML = '<option value="">Loading students...</option>';
+    
+    fetch(`/api/get-students-for-form?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`)
+    .then(response => response.json())
+    .then(data => {
+        select.innerHTML = '';
+        
+        if (data.success && data.students.length > 0) {
+            select.disabled = false;
+            select.innerHTML = '<option value="">Choose a student...</option>';
+            
+            data.students.forEach(student => {
+                const option = document.createElement('option');
+                option.value = student.student_id;
+                option.textContent = `${student.first_name} ${student.last_name} (ID: ${student.student_id})`;
+                option.setAttribute('data-form', formLevel);
+                option.setAttribute('data-fname', student.first_name);
+                option.setAttribute('data-lname', student.last_name);
+                select.appendChild(option);
+            });
+        } else {
+            select.innerHTML = '<option value="">No students found in this form.</option>';
+        }
+    })
+    .catch(error => {
+        console.error('Error loading students:', error);
+        select.innerHTML = '<option value="">Error loading students</option>';
+    });
+}
+
+document.getElementById('studentSelect').addEventListener('change', updateSummary);
+document.getElementById('formSelect').addEventListener('change', function() {
+    filterStudents();
+    updateSummary();
+});
+
+function updateSummary() {
+    const select = document.getElementById('studentSelect');
+    const studentId = select.value;
+    
+    if (studentId && select.selectedIndex > 0) {
+        const selectedOption = select.options[select.selectedIndex];
+        const form = selectedOption.getAttribute('data-form');
+        const fname = selectedOption.getAttribute('data-fname');
+        const lname = selectedOption.getAttribute('data-lname');
+        
+        document.getElementById('studentSummary').innerHTML = `
+            <p><strong>Name:</strong> ${fname} ${lname}</p>
+            <p><strong>Form Level:</strong> ${form}</p>
+            <p class="text-muted">Ready to print scholastic record</p>
+        `;
+    } else {
+        document.getElementById('studentSummary').innerHTML = '<p class="text-muted">Select a student to view details</p>';
+    }
+}
+
+function printRecord(e) {
+    const studentId = document.getElementById('studentSelect').value;
+    const year = document.getElementById('academicYear').value;
+    const form = document.getElementById('formSelect').value;
+    
+    if (!studentId || !form) {
+        e.preventDefault();
+        alert('Please select a Form and a student first.');
+        return;
+    }
+    
+    // Set the href so the browser treats it as a real link
+    const url = `/scholastic-record/print/${studentId}?year=${encodeURIComponent(year)}&form=${encodeURIComponent(form)}`;
+    document.getElementById('printBtn').href = url;
+    document.getElementById('printBtn').target = '_blank';
+}
+
+function exportBulkExcel() {
+    const formLevel = document.getElementById('bulkFormSelect').value;
+    const academicYear = document.getElementById('bulkYearSelect').value;
+    const btn = document.getElementById('bulkExportBtn');
+    
+    if (!formLevel || !academicYear) {
+        alert('Please select both Form and Academic Year.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
+    
+    // Redirect to download endpoint
+    window.location.href = `/api/export-bulk-scholastic-excel?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`;
+    
+    // Re-enable after a delay (since we can't easily track the download completion)
+    setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-download me-2"></i>Generate Excel Report';
+    }, 5000);
+}
+</script>
+{% endblock %}

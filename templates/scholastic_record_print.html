@@ -252,7 +252,7 @@
 <body>
     <div class="print-btn-container">
         <button class="print-btn" onclick="window.print()">🖨️ Print Record</button>
-        <button class="print-btn" style="background-color: #198754; margin-left: 10px;" onclick="saveScholasticDetails()">💾 Save Information</button>
+        <button class="print-btn" style="background-color: #198754; margin-left: 10px;" onclick="saveScholasticDetails(event)">💾 Save Information</button>
     </div>
 
     <!-- PAGE 1 -->
@@ -641,7 +641,7 @@
         };
 
         // Scholastic Details Persistence
-        function saveScholasticDetails() {
+        function saveScholasticDetails(e) {
             const studentId = {{ student.student_id }};
             const details = {
                 postal_address: document.getElementById('postal_address').value,
@@ -675,7 +675,7 @@
                 photo_data: document.getElementById('studentPhotoImg').src.startsWith('data:') ? document.getElementById('studentPhotoImg').src : ''
             };
 
-            const btn = event.target;
+            const btn = e.target;
             const originalText = btn.innerHTML;
             btn.innerHTML = '⌛ Saving...';
             btn.disabled = true;
