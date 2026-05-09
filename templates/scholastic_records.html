@@ -23,6 +23,11 @@
                     <i class="fas fa-file-excel me-2"></i>Bulk Excel Export
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="bulk-pdf-tab" data-bs-toggle="tab" data-bs-target="#bulk-pdf" type="button" role="tab" aria-controls="bulk-pdf" aria-selected="false">
+                    <i class="fas fa-file-pdf me-2"></i>Bulk PDF Download
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content" id="scholasticTabsContent">
@@ -124,6 +129,57 @@
                                     <div class="d-grid mt-4">
                                         <button type="submit" class="btn btn-success btn-lg" id="bulkExportBtn">
                                             <i class="fas fa-download me-2"></i>Generate Excel Report
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <!-- Bulk PDF Tab -->
+            <div class="tab-pane fade" id="bulk-pdf" role="tabpanel" aria-labelledby="bulk-pdf-tab">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-danger text-white py-3">
+                        <h5 class="mb-0"><i class="fas fa-file-pdf me-2"></i>Bulk Scholastic Records (PDF)</h5>
+                    </div>
+                    <div class="card-body p-4 text-center">
+                        <div class="mb-4">
+                            <i class="fas fa-file-pdf fa-4x text-danger opacity-25"></i>
+                        </div>
+                        <p class="lead">Generate a single printable document containing scholastic records for every student in the selected class.</p>
+                        
+                        <form id="bulkPdfForm" onsubmit="event.preventDefault(); downloadBulkPdf();">
+                            <div class="row justify-content-center">
+                                <div class="col-md-8">
+                                    <div class="row text-start">
+                                        <div class="col-md-6 mb-3">
+                                            <label for="pdfFormSelect" class="form-label fw-bold">Form Level</label>
+                                            <select class="form-select" id="pdfFormSelect" required>
+                                                <option value="1">Form 1</option>
+                                                <option value="2">Form 2</option>
+                                                <option value="3">Form 3</option>
+                                                <option value="4">Form 4</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label for="pdfYearSelect" class="form-label fw-bold">Academic Year</label>
+                                            <select class="form-select" id="pdfYearSelect" required>
+                                                {% for y in academic_years %}
+                                                <option value="{{ y }}" {% if y == selected_academic_year %}selected{% endif %}>{{ y }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-warning small text-start mt-2">
+                                        <i class="fas fa-exclamation-triangle me-1"></i>
+                                        <strong>Note:</strong> This will open a large document in a new tab. Once it loads, use your browser's <strong>Print</strong> (Ctrl+P) function and select <strong>"Save as PDF"</strong> to download.
+                                    </div>
+                                    
+                                    <div class="d-grid mt-4">
+                                        <button type="submit" class="btn btn-danger btn-lg" id="bulkPdfBtn">
+                                            <i class="fas fa-print me-2"></i>Generate Bulk Records
                                         </button>
                                     </div>
                                 </div>
@@ -265,6 +321,19 @@ function exportBulkExcel() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fas fa-download me-2"></i>Generate Excel Report';
     }, 5000);
+}
+
+function downloadBulkPdf() {
+    const formLevel = document.getElementById('pdfFormSelect').value;
+    const academicYear = document.getElementById('pdfYearSelect').value;
+    
+    if (!formLevel || !academicYear) {
+        alert('Please select both Form and Academic Year.');
+        return;
+    }
+
+    const url = `/scholastic-record/bulk-print?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`;
+    window.open(url, '_blank');
 }
 </script>
 {% endblock %}

@@ -31,6 +31,10 @@ except ImportError as e:
 import logging
 
 app = Flask(__name__)
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
 # Support configuring SECRET_KEY from environment for production safety
 app.secret_key = os.environ.get('SECRET_KEY', 'malawi_school_reporting_system_2025')
 if app.secret_key == 'malawi_school_reporting_system_2025':
@@ -417,6 +421,71 @@ def api_print_all_reports():
         
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error generating reports: {str(e)}'}), 500
+
+@app.route('/scholastic-record/bulk-print')
+def bulk_print_scholastic_records():
+    """Fallback bulk print route"""
+    if not check_auth():
+        return redirect(url_for('login'))
+        
+    try:
+        # Simple implementation for fallback
+        school_id = session.get('user_id')
+        form_level = int(request.args.get('form_level', 1))
+        academic_year = request.args.get('academic_year', '2025-2026')
+        
+        students = db.get_students_by_grade(form_level, school_id)
+        settings = db.get_school_settings(school_id)
+        school_name = settings.get('school_name', 'School Reporting System')
+        
+        subjects = [
+            'AGRICULTURE', 'BIBLE KNOWLEDGE', 'BIOLOGY', 'BUSINESS STUDIES', 'CHEMISTRY', 'CHICHEWA', 
+            'CLOTHING & TEXTILES', 'COMPUTER STUDIES', 'ENGLISH', 'GEOGRAPHY', 'HISTORY', 'HOME ECONOMICS',
+            'LIFE SKILLS', 'MATHEMATICS', 'PHYSICS', 'SOCIAL STUDIES', 'TECHNICAL DRAWING'
+        ]
+        
+        # Calculate years
+        try:
+            start_year = int(academic_year.split('-')[0])
+        except: start_year = 2025
+        form_1_start = start_year - (form_level - 1)
+        years = {i: f"{form_1_start+i-1}-{form_1_start+i}" for i in range(1, 5)}
+        
+        records = []
+        for student in students:
+            student_id = student['student_id']
+            student_marks = {s: {i: {t: '' for t in ['Term 1', 'Term 2', 'Term 3']} for i in range(1, 5)} for s in subjects}
+            active_terms = set()
+            
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT form_level, term, subject, mark, academic_year FROM student_marks WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                for row in cursor.fetchall():
+                    f_level, r_term, sub, mark, m_year = row
+                    if f_level in years and m_year == years[f_level] and r_term in ['Term 1', 'Term 2', 'Term 3']:
+                        active_terms.add((f_level, r_term))
+                        sub_upper = str(sub).upper()
+                        matched_sub = 'LIFE SKILLS' if sub_upper.startswith('LIFE SKILLS') else ('SOCIAL STUDIES' if sub_upper == 'SOS' else sub_upper)
+                        if matched_sub in student_marks:
+                            student_marks[matched_sub][f_level][r_term] = mark
+
+            stats = {i: {t: {'pos': '', 'total': ''} for t in ['Term 1', 'Term 2', 'Term 3']} for i in range(1, 5)}
+            for f_level, r_term in active_terms:
+                try:
+                    res = db.get_student_position_and_points(student_id, r_term, years[f_level], f_level, school_id)
+                    stats[f_level][r_term]['pos'] = res.get('position', '')
+                    stats[f_level][r_term]['total'] = res.get('total_students', '')
+                except: pass
+                
+            records.append({
+                'student': student, 'marks': student_marks, 'stats': stats,
+                'details': db.get_scholastic_details(student_id, school_id), 'years': years
+            })
+            
+        return render_template('scholastic_record_bulk.html', records=records, school_name=school_name,
+                             form_level=form_level, academic_year=academic_year, subjects=subjects)
+    except Exception as e:
+        return render_template('error.html', error=str(e))
 
 if __name__ == '__main__':
     print("Starting Malawi School Reporting System...")

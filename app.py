@@ -33,6 +33,10 @@ import threading
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
+
 # Signature Upload Configuration
 UPLOAD_FOLDER = os.path.join(current_dir, 'static', 'uploads', 'signatures')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -3110,6 +3114,118 @@ def print_scholastic_record(student_id):
         app.logger.error(f"Error printing scholastic record: {str(e)}")
         app.logger.error(traceback.format_exc())
         return render_template('error.html', error='Failed to load scholastic record')
+
+@app.route('/scholastic-record/bulk-print')
+def bulk_print_scholastic_records():
+    """Batch printable scholastic records for an entire class"""
+    if not check_auth():
+        return redirect(url_for('login'))
+        
+    try:
+        school_id = get_current_school_id()
+        form_level = int(request.args.get('form_level', 1))
+        academic_year = request.args.get('academic_year', '')
+        
+        if not academic_year:
+            settings = db.get_school_settings(school_id)
+            academic_year = settings.get('current_academic_year', '2025-2026')
+            
+        students = db.get_students_by_grade(form_level, school_id)
+        if not students:
+            return render_template('error.html', error=f'No students found in Form {form_level}'), 404
+            
+        settings = db.get_school_settings(school_id)
+        school_name = settings.get('school_name', '')
+        
+        subjects = [
+            'AGRICULTURE', 'BIBLE KNOWLEDGE', 'BIOLOGY', 'BUSINESS STUDIES', 'CHEMISTRY', 'CHICHEWA', 
+            'CLOTHING & TEXTILES', 'COMPUTER STUDIES', 'ENGLISH', 'GEOGRAPHY', 'HISTORY', 'HOME ECONOMICS',
+            'LIFE SKILLS', 'MATHEMATICS', 'PHYSICS', 'SOCIAL STUDIES', 'TECHNICAL DRAWING'
+        ]
+        
+        try:
+            start_year_str = academic_year.split('-')[0]
+            start_year = int(start_year_str)
+        except Exception:
+            start_year = 2025
+            
+        form_1_start = start_year - (form_level - 1)
+        
+        years = {
+            1: f"{form_1_start}-{form_1_start+1}",
+            2: f"{form_1_start+1}-{form_1_start+2}",
+            3: f"{form_1_start+2}-{form_1_start+3}",
+            4: f"{form_1_start+3}-{form_1_start+4}"
+        }
+        
+        records = []
+        for student in students:
+            student_id = student['student_id']
+            student_marks = {}
+            for subject in subjects:
+                student_marks[subject] = {
+                    1: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                    2: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                    3: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                    4: {'Term 1': '', 'Term 2': '', 'Term 3': ''}
+                }
+            
+            active_terms = set()
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT form_level, term, subject, mark, academic_year
+                        FROM student_marks 
+                        WHERE student_id = ? AND school_id = ?
+                    """, (student_id, school_id))
+                    
+                    for row in cursor.fetchall():
+                        f_level, r_term, sub, mark, m_year = row
+                        if not isinstance(f_level, int) or r_term not in ['Term 1', 'Term 2', 'Term 3']:
+                            continue
+                        
+                        if f_level in years and m_year == years[f_level]:
+                            active_terms.add((f_level, r_term))
+                            sub_upper = str(sub).upper()
+                            if sub_upper.startswith('LIFE SKILLS'): matched_sub = 'LIFE SKILLS'
+                            elif sub_upper == 'SOS': matched_sub = 'SOCIAL STUDIES'
+                            else: matched_sub = sub_upper
+                                
+                            if matched_sub in student_marks and f_level in [1, 2, 3, 4]:
+                                student_marks[matched_sub][f_level][r_term] = mark
+            except Exception as db_err:
+                app.logger.error(f"Error fetching marks for student {student_id} in bulk print: {db_err}")
+
+            stats = {
+                1: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+                2: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+                3: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+                4: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}}
+            }
+            
+            for f_level, r_term in active_terms:
+                if f_level in [1, 2, 3, 4]:
+                    try:
+                        result = db.get_student_position_and_points(student_id, r_term, years[f_level], f_level, school_id)
+                        stats[f_level][r_term]['pos'] = result.get('position', '')
+                        stats[f_level][r_term]['total'] = result.get('total_students', '')
+                    except Exception: pass
+                
+            scholastic_details = db.get_scholastic_details(student_id, school_id)
+            records.append({
+                'student': student, 'marks': student_marks, 'stats': stats,
+                'details': scholastic_details, 'years': years
+            })
+            
+        return render_template('scholastic_record_bulk.html', 
+                             records=records, school_name=school_name,
+                             form_level=form_level, academic_year=academic_year,
+                             subjects=subjects)
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error generating bulk scholastic records: {str(e)}\n{traceback.format_exc()}")
+        return render_template('error.html', error='Failed to generate bulk records')
 
 # Add error handler for 404 errors
 @app.errorhandler(404)
