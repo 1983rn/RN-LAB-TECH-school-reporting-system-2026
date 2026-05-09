@@ -1998,19 +1998,272 @@ def api_upload_students_excel():
         })
 
 
-@app.route('/api/get-all-students', methods=['GET'])
-def api_get_all_students():
-    """Get all students for the current school"""
+@app.route('/api/get-students-for-form', methods=['GET'])
+def api_get_students_for_form():
+    """Get students for a specific form level and academic year - uses enrollment data (same as Data Entry)"""
     try:
         school_id = get_current_school_id()
         if not school_id:
             return jsonify({'success': False, 'message': 'School authentication required'}), 403
         
-        # Get students from all forms for this school
+        form_level = int(request.args.get('form_level', 1))
+        academic_year = request.args.get('academic_year', '')
+        
+        settings = db.get_school_settings(school_id) if hasattr(db, 'get_school_settings') else {}
+        if not academic_year:
+            academic_year = settings.get('selected_academic_year', '2025-2026')
+        
+        # Match Data Entry logic: use the term currently selected in settings
+        selected_term = settings.get('selected_term', 'Term 1')
+        
+        # Fetch students for this specific form and term
+        students = db.get_students_enrolled_in_term(form_level, selected_term, academic_year, school_id)
+        
+        # Sort alphabetically
+        students.sort(key=lambda s: (s.get('first_name', ''), s.get('last_name', '')))
+        
+        return jsonify({
+            'success': True,
+            'students': students,
+            'term_used': selected_term
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Error retrieving students: {str(e)}'
+        })
+
+@app.route('/api/export-bulk-scholastic-excel', methods=['GET'])
+def api_export_bulk_scholastic_excel():
+    app.logger.info("Accessing bulk scholastic export endpoint")
+    """Export bulk scholastic record data for an entire form to Excel"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return "Authentication required", 403
+            
+        form_level = int(request.args.get('form_level', 1))
+        academic_year = request.args.get('academic_year', '')
+        
+        settings = db.get_school_settings(school_id)
+        if not academic_year:
+            academic_year = settings.get('selected_academic_year', '2025-2026')
+        
+        selected_term = settings.get('selected_term', 'Term 1')
+        
+        # Get all students for this form/term/year using Data Entry as source
+        students = db.get_students_enrolled_in_term(form_level, selected_term, academic_year, school_id)
+            
+        if not students:
+            # Try getting students by grade if term enrollment is empty (fallback)
+            students = db.get_students_by_grade(form_level, school_id)
+            
+        if not students:
+            return f"No students found in Form {form_level} for {academic_year}. Please ensure they are enrolled in the Data Entry module.", 404
+            
+        # Define subjects to export (Standard Scholastic Record List)
+        subjects_list = [
+            'AGRICULTURE', 'BIBLE KNOWLEDGE', 'BIOLOGY', 'BUSINESS STUDIES', 'CHEMISTRY', 'CHICHEWA', 
+            'CLOTHING & TEXTILES', 'COMPUTER STUDIES', 'ENGLISH', 'GEOGRAPHY', 'HISTORY', 'HOME ECONOMICS',
+            'LIFE SKILLS', 'MATHEMATICS', 'PHYSICS', 'SOCIAL STUDIES', 'TECHNICAL DRAWING'
+        ]
+        
+        # Journey calculation based on current form and year
+        try:
+            start_year_int = int(academic_year.split('-')[0])
+            form_1_start = start_year_int - (form_level - 1)
+        except:
+            form_1_start = 2025
+            
+        years_map = {
+            1: f"{form_1_start}-{form_1_start+1}",
+            2: f"{form_1_start+1}-{form_1_start+2}",
+            3: f"{form_1_start+2}-{form_1_start+3}",
+            4: f"{form_1_start+3}-{form_1_start+4}"
+        }
+        
+        data_rows = []
+        
+        # Bulk fetch scholastic details and marks for efficiency
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            # Biographical details
+            cursor.execute("SELECT * FROM student_scholastic_details WHERE school_id = ?", (school_id,))
+            cols = [desc[0] for desc in cursor.description]
+            schol_details_all = {row[0]: dict(zip(cols, row)) for row in cursor.fetchall()}
+            
+            # Marks for all 4 journey years
+            journey_years = list(years_map.values())
+            query = "SELECT student_id, subject, mark, term, academic_year, form_level FROM student_marks WHERE school_id = ? AND academic_year IN (%s)" % (
+                ','.join(['%s']*len(journey_years))
+            )
+            cursor.execute(query, [school_id] + journey_years)
+            all_marks_raw = cursor.fetchall()
+            
+        # Organize marks: marks_lookup[student_id][year][form_level][subject][term]
+        marks_lookup = {}
+        for sid, sub, mark, t, y, f in all_marks_raw:
+            if sid not in marks_lookup: marks_lookup[sid] = {}
+            if y not in marks_lookup[sid]: marks_lookup[sid][y] = {}
+            if f not in marks_lookup[sid][y]: marks_lookup[sid][y][f] = {}
+            
+            sub_key = str(sub).upper().strip()
+            if sub_key.startswith('LIFE SKILLS'): sub_key = 'LIFE SKILLS'
+            elif sub_key == 'SOS': sub_key = 'SOCIAL STUDIES'
+            
+            if sub_key not in marks_lookup[sid][y][f]: marks_lookup[sid][y][f][sub_key] = {}
+            marks_lookup[sid][y][f][sub_key][t] = mark
+
+        for student in students:
+            sid = student['student_id']
+            details = schol_details_all.get(sid, {})
+            
+            # 1. Biographical / Page 1 Data
+            row = {
+                'ID': sid,
+                'Full Name': f"{student['first_name']} {student['last_name']}",
+                'DOB': details.get('dob', student.get('date_of_birth', '')),
+                'Tribe': details.get('tribe', ''),
+                'Language': details.get('language', ''),
+                'Village': details.get('village', ''),
+                'TA': details.get('ta', ''),
+                'Home District': details.get('home_district', ''),
+                'Religion': details.get('religion', ''),
+                'Parent Name': details.get('parent_guardian_name', student.get('parent_guardian_name', '')),
+                'Parent Address': details.get('parent_guardian_address', student.get('address', '')),
+                'Fee Payer': details.get('fee_payer_info', ''),
+                'Entry Date': details.get('date_of_entry', ''),
+                'Prev School': details.get('prev_school', ''),
+                'Primary School': details.get('primary_school', ''),
+                'Hobbies': f"{details.get('hobbies_1', '')} {details.get('hobbies_2', '')} {details.get('hobbies_3', '')}".strip()
+            }
+            
+            # 2. Marks / Page 2 Data (4 Years)
+            for f_level in [1, 2, 3, 4]:
+                y_val = years_map[f_level]
+                st_marks = marks_lookup.get(sid, {}).get(y_val, {}).get(f_level, {})
+                
+                for sub in subjects_list:
+                    for t_idx in [1, 2, 3]:
+                        t_name = f"Term {t_idx}"
+                        col_name = f"F{f_level}_{sub[:4]}_T{t_idx}"
+                        row[col_name] = st_marks.get(sub, {}).get(t_name, '')
+                
+                # Comments
+                row[f'F{f_level}_Comment'] = details.get(f'teacher_comment_{f_level}', '')
+            
+            data_rows.append(row)
+            
+        if not data_rows:
+            return "Failed to compile data rows.", 500
+
+        df = pd.DataFrame(data_rows)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Scholastic Records')
+            
+            workbook = writer.book
+            worksheet = writer.sheets['Scholastic Records']
+            
+            # Header Formatting
+            header_format = workbook.add_format({
+                'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#D7E4BC', 'border': 1, 'font_size': 10
+            })
+            
+            for col_num, value in enumerate(df.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+                worksheet.set_column(col_num, col_num, 12)
+                
+        output.seek(0)
+        filename = f"Scholastic_Records_Form_{form_level}_{academic_year}.xlsx"
+        return send_file(output, as_attachment=True, download_name=filename, 
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                         
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"Error generating Excel: {str(e)}", 500
+
+@app.route('/api/save-scholastic-details', methods=['POST'])
+def api_save_scholastic_details():
+    """Save persistent scholastic record details for a student"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+            
+        data = request.get_json()
+        student_id = data.get('student_id')
+        details = data.get('details')
+        
+        if not student_id or not details:
+            return jsonify({'success': False, 'message': 'Student ID and details required'}), 400
+            
+        success = db.save_scholastic_details(student_id, school_id, details)
+        
+        return jsonify({
+            'success': success,
+            'message': 'Scholastic details saved successfully' if success else 'Failed to save details'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error saving scholastic details: {str(e)}'})
+
+@app.route('/api/get-scholastic-details/<int:student_id>', methods=['GET'])
+def api_get_scholastic_details(student_id):
+    """Get persistent scholastic record details for a student"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+            
+        details = db.get_scholastic_details(student_id, school_id)
+        
+        return jsonify({
+            'success': True,
+            'details': details
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error retrieving scholastic details: {str(e)}'})
+
+@app.route('/api/get-all-students', methods=['GET'])
+def api_get_all_students():
+    """Get all students for the current school, using enrollment data to determine correct form/class"""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+        
+        settings = db.get_school_settings(school_id) if hasattr(db, 'get_school_settings') else {}
+        selected_academic_year = settings.get('selected_academic_year', '')
+        if not selected_academic_year:
+            selected_academic_year = f'{2025}-{2026}'
+        
+        # Use enrollment data (same as Data Entry) to determine correct form for each student
         all_students = []
+        seen_ids = set()
+        
+        for form_level in [1, 2, 3, 4]:
+            for term in ['Term 1', 'Term 2', 'Term 3']:
+                enrolled = db.get_students_enrolled_in_term(form_level, term, selected_academic_year, school_id)
+                for s in enrolled:
+                    sid = s.get('student_id')
+                    if sid not in seen_ids:
+                        seen_ids.add(sid)
+                        # Override grade_level with the enrollment form_level (source of truth)
+                        s['grade_level'] = form_level
+                        all_students.append(s)
+        
+        # Fallback: also include students from get_students_by_grade 
+        # in case they haven't been enrolled in any term yet
         for form_level in [1, 2, 3, 4]:
             students = db.get_students_by_grade(form_level, school_id)
-            all_students.extend(students)
+            for s in students:
+                sid = s.get('student_id')
+                if sid not in seen_ids:
+                    seen_ids.add(sid)
+                    all_students.append(s)
         
         return jsonify({
             'success': True,
@@ -2704,6 +2957,160 @@ def api_developer_reset_school_credentials():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error resetting credentials: {str(e)}'})
 
+@app.route('/scholastic-records')
+def scholastic_records():
+    """Scholastic records selection page"""
+    if not check_auth():
+        return redirect(url_for('login'))
+        
+    try:
+        school_id = get_current_school_id()
+        settings = db.get_school_settings(school_id) if hasattr(db, 'get_school_settings') else {}
+        
+        # Use the exact same academic year list as the Data Entry page
+        academic_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
+        
+        # Pull the currently selected academic year from settings (set via Settings/Data Entry page)
+        selected_academic_year = settings.get('selected_academic_year', '')
+        if not selected_academic_year and academic_years:
+            selected_academic_year = academic_years[0]
+        
+        return render_template('scholastic_records.html',
+                             academic_years=academic_years,
+                             selected_academic_year=selected_academic_year)
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error loading scholastic records page: {str(e)}")
+        return render_template('error.html', error='Failed to load page')
+
+@app.route('/scholastic-record/print/<int:student_id>')
+def print_scholastic_record(student_id):
+    """Printable scholastic record"""
+    if not check_auth():
+        return redirect(url_for('login'))
+        
+    try:
+        school_id = get_current_school_id()
+        student = db.get_student_by_id(student_id, school_id)
+        if not student:
+            return render_template('error.html', error='Student not found'), 404
+            
+        settings = db.get_school_settings(school_id)
+        school_name = settings.get('school_name', '')
+        
+        subjects = [
+            'AGRICULTURE', 'BIBLE KNOWLEDGE', 'BIOLOGY', 'BUSINESS STUDIES', 'CHEMISTRY', 'CHICHEWA', 
+            'CLOTHING & TEXTILES', 'COMPUTER STUDIES', 'ENGLISH', 'GEOGRAPHY', 'HISTORY', 'HOME ECONOMICS',
+            'LIFE SKILLS', 'MATHEMATICS', 'PHYSICS', 'SOCIAL STUDIES', 'TECHNICAL DRAWING'
+        ]
+        
+        term = request.args.get('term', '')
+        academic_year = request.args.get('year', '')
+        form_str = request.args.get('form', '1')
+        
+        try:
+            current_form = int(form_str)
+        except ValueError:
+            current_form = 1
+            
+        try:
+            start_year_str = academic_year.split('-')[0]
+            start_year = int(start_year_str)
+        except Exception:
+            start_year = 2025
+            
+        form_1_start = start_year - (current_form - 1)
+        
+        years = {
+            1: f"{form_1_start}-{form_1_start+1}",
+            2: f"{form_1_start+1}-{form_1_start+2}",
+            3: f"{form_1_start+2}-{form_1_start+3}",
+            4: f"{form_1_start+3}-{form_1_start+4}"
+        }
+        
+        student_marks = {}
+        for subject in subjects:
+            student_marks[subject] = {
+                1: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                2: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                3: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
+                4: {'Term 1': '', 'Term 2': '', 'Term 3': ''}
+            }
+            
+        active_terms = set()
+            
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT form_level, term, subject, mark, academic_year
+                    FROM student_marks 
+                    WHERE student_id = ? AND school_id = ?
+                """, (student_id, school_id))
+                
+                for row in cursor.fetchall():
+                    f_level = row[0]
+                    r_term = row[1]
+                    sub = row[2]
+                    mark = row[3]
+                    m_year = row[4]
+                    
+                    if not isinstance(f_level, int) or r_term not in ['Term 1', 'Term 2', 'Term 3']:
+                        continue
+                    
+                    # Only include marks that match the academic year for this form level in the 4-year journey
+                    if f_level in years and m_year == years[f_level]:
+                        active_terms.add((f_level, r_term))
+                        
+                        sub_upper = str(sub).upper()
+                        if sub_upper.startswith('LIFE SKILLS'):
+                            matched_sub = 'LIFE SKILLS'
+                        elif sub_upper == 'SOS':
+                            matched_sub = 'SOCIAL STUDIES'
+                        else:
+                            matched_sub = sub_upper
+                            
+                        if matched_sub in student_marks and f_level in [1, 2, 3, 4]:
+                            student_marks[matched_sub][f_level][r_term] = mark
+        except Exception as db_err:
+            app.logger.error(f"Error fetching marks for scholastic record: {db_err}")
+            
+        stats = {
+            1: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+            2: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+            3: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
+            4: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}}
+        }
+        
+        for f_level, r_term in active_terms:
+            if f_level in [1, 2, 3, 4]:
+                year = years[f_level]
+                try:
+                    result = db.get_student_position_and_points(student_id, r_term, year, f_level, school_id)
+                    stats[f_level][r_term]['pos'] = result.get('position', '')
+                    stats[f_level][r_term]['total'] = result.get('total_students', '')
+                except Exception as e:
+                    app.logger.error(f"Error getting stats for form {f_level} term {r_term}: {e}")
+            
+        # Fetch saved scholastic details
+        scholastic_details = db.get_scholastic_details(student_id, school_id)
+            
+        return render_template('scholastic_record_print.html', 
+                             student=student, 
+                             school_name=school_name,
+                             subjects=subjects,
+                             term=term,
+                             academic_year=academic_year,
+                             years=years,
+                             student_marks=student_marks,
+                             stats=stats,
+                             scholastic_details=scholastic_details)
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error printing scholastic record: {str(e)}")
+        app.logger.error(traceback.format_exc())
+        return render_template('error.html', error='Failed to load scholastic record')
+
 # Add error handler for 404 errors
 @app.errorhandler(404)
 def not_found_error(error):
@@ -2789,12 +3196,15 @@ if __name__ == "__main__":
                 subprocess.check_call([sys.executable, '-m', 'venv', venv_dir])
             # Determine pip inside venv
             pip_exe = os.path.join(venv_dir, 'Scripts' if os.name == 'nt' else 'bin', 'pip' + ('.exe' if os.name == 'nt' else ''))
-            if os.path.isfile(pip_exe):
+            # Determine python inside venv to safely upgrade pip on Windows
+            python_exe = os.path.join(venv_dir, 'Scripts' if os.name == 'nt' else 'bin', 'python' + ('.exe' if os.name == 'nt' else ''))
+            
+            if os.path.isfile(pip_exe) and os.path.isfile(python_exe):
                 pip_path = pip_exe
                 print('Upgrading pip inside the venv...')
-                subprocess.check_call([pip_path, 'install', '--upgrade', 'pip'])
+                subprocess.check_call([python_exe, '-m', 'pip', 'install', '--upgrade', 'pip'])
                 print('Installing requirements into the venv...')
-                subprocess.check_call([pip_path, 'install', '-r', 'requirements.txt'])
+                subprocess.check_call([python_exe, '-m', 'pip', 'install', '-r', 'requirements.txt'])
                 print('Requirements installed successfully into .venv')
             else:
                 print('Could not find pip in the virtual environment. Activate the venv and run `pip install -r requirements.txt` manually.')

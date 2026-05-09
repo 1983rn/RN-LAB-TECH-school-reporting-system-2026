@@ -45,11 +45,11 @@ except Exception as e:
 application.config['ENV'] = os.environ.get('FLASK_ENV', 'production')
 application.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
 
-# Configure SERVER_NAME from environment if provided
-server_name = os.environ.get('SERVER_NAME')
-if server_name:
-    application.config['SERVER_NAME'] = server_name
-    logger.info(f'Configured SERVER_NAME from environment: {server_name}')
+# SERVER_NAME is usually not needed on Render and can cause 404 errors if misconfigured
+# server_name = os.environ.get('SERVER_NAME')
+# if server_name:
+#     application.config['SERVER_NAME'] = server_name
+#     logger.info(f'Configured SERVER_NAME from environment: {server_name}')
 
 # Wrap application static handling with WhiteNoise when available
 # WhiteNoise serves static files efficiently in production

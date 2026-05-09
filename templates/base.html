@@ -95,6 +95,12 @@
                         <span>Rankings & Analysis</span>
                     </a>
                 </li>
+                <li class="sidebar-menu-item">
+                    <a href="{{ url_for('scholastic_records') }}" class="sidebar-link {% if request.endpoint == 'scholastic_records' %}active{% endif %}">
+                        <i class="fas fa-file-contract"></i>
+                        <span>Scholastic Records</span>
+                    </a>
+                </li>
 
                 <li class="sidebar-menu-header">System</li>
                 <li class="sidebar-menu-item">

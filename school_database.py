@@ -383,6 +383,42 @@ class SchoolDatabase:
                 UNIQUE(student_id, term, academic_year, school_id)
             )""")
 
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_scholastic_details (
+                student_id INTEGER PRIMARY KEY,
+                school_id INTEGER NOT NULL,
+                postal_address TEXT,
+                dob TEXT,
+                tribe TEXT,
+                language TEXT,
+                village TEXT,
+                ta TEXT,
+                home_district TEXT,
+                religion TEXT,
+                parent_guardian_name TEXT,
+                parent_guardian_address TEXT,
+                fee_payer_info TEXT,
+                date_of_entry TEXT,
+                prev_school TEXT,
+                prev_school_district TEXT,
+                primary_school TEXT,
+                primary_school_district TEXT,
+                transfer_date TEXT,
+                transfer_reason TEXT,
+                hobbies_1 TEXT,
+                hobbies_2 TEXT,
+                hobbies_3 TEXT,
+                hobbies_4 TEXT,
+                teacher_comment_1 TEXT,
+                teacher_comment_2 TEXT,
+                teacher_comment_3 TEXT,
+                teacher_comment_4 TEXT,
+                career_preference TEXT,
+                additional_comments TEXT,
+                photo_data TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
             # Create default fees if none exist
             cur.execute("SELECT COUNT(*) FROM school_fees")
             if cur.fetchone()[0] == 0:
@@ -823,6 +859,69 @@ class SchoolDatabase:
             self.logger.error(f"Error updating student {student_id}: {e}")
             raise
     
+    def get_scholastic_details(self, student_id: int, school_id: int) -> Dict:
+        """Get persistent scholastic record details for a student."""
+        try:
+            with self.get_connection() as conn:
+                query = "SELECT * FROM student_scholastic_details WHERE student_id = ? AND school_id = ?"
+                df = self._pandas_read_sql(query, conn, params=(student_id, school_id))
+                if not df.empty:
+                    return df.to_dict('records')[0]
+                return {}
+        except Exception as e:
+            self.logger.error(f"Error getting scholastic details for student {student_id}: {e}")
+            return {}
+
+    def save_scholastic_details(self, student_id: int, school_id: int, details: dict):
+        """Save or update persistent scholastic record details for a student."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Check if exists
+                cursor.execute("SELECT 1 FROM student_scholastic_details WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                exists = cursor.fetchone()
+                
+                fields = []
+                values = []
+                
+                allowed_fields = [
+                    'postal_address', 'dob', 'tribe', 'language', 'village', 'ta', 'home_district', 
+                    'religion', 'parent_guardian_name', 'parent_guardian_address', 'fee_payer_info', 
+                    'date_of_entry', 'prev_school', 'prev_school_district', 'primary_school', 
+                    'primary_school_district', 'transfer_date', 'transfer_reason', 
+                    'hobbies_1', 'hobbies_2', 'hobbies_3', 'hobbies_4', 
+                    'teacher_comment_1', 'teacher_comment_2', 'teacher_comment_3', 'teacher_comment_4', 
+                    'career_preference', 'additional_comments', 'photo_data'
+                ]
+                
+                for field in allowed_fields:
+                    if field in details:
+                        fields.append(field)
+                        values.append(details[field])
+                
+                if not fields:
+                    return False
+
+                if exists:
+                    # Update
+                    set_clause = ", ".join([f"{f} = ?" for f in fields])
+                    query = f"UPDATE student_scholastic_details SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE student_id = ? AND school_id = ?"
+                    values.extend([student_id, school_id])
+                    cursor.execute(query, values)
+                else:
+                    # Insert
+                    field_names = ", ".join(['student_id', 'school_id'] + fields)
+                    placeholders = ", ".join(['?'] * (len(fields) + 2))
+                    query = f"INSERT INTO student_scholastic_details ({field_names}) VALUES ({placeholders})"
+                    cursor.execute(query, [student_id, school_id] + values)
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            self.logger.error(f"Error saving scholastic details for student {student_id}: {e}")
+            raise
+
     # ASSESSMENT TYPE MANAGEMENT
     def get_report_card_assessment_types(self) -> List[Dict]:
         """Get assessment types that appear on report cards"""
