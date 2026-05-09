@@ -3117,7 +3117,7 @@ def print_scholastic_record(student_id):
 
 @app.route('/scholastic-record/bulk-print')
 def bulk_print_scholastic_records():
-    """Batch printable scholastic records for an entire class"""
+    """Batch printable scholastic records for an entire class (Optimized)"""
     if not check_auth():
         return redirect(url_for('login'))
         
@@ -3144,78 +3144,83 @@ def bulk_print_scholastic_records():
         ]
         
         try:
-            start_year_str = academic_year.split('-')[0]
-            start_year = int(start_year_str)
-        except Exception:
-            start_year = 2025
-            
+            start_year = int(academic_year.split('-')[0])
+        except: start_year = 2025
         form_1_start = start_year - (form_level - 1)
+        years = {i: f"{form_1_start+i-1}-{form_1_start+i}" for i in range(1, 5)}
         
-        years = {
-            1: f"{form_1_start}-{form_1_start+1}",
-            2: f"{form_1_start+1}-{form_1_start+2}",
-            3: f"{form_1_start+2}-{form_1_start+3}",
-            4: f"{form_1_start+3}-{form_1_start+4}"
-        }
+        # Batch fetch ALL marks for these students across all 4 years
+        student_ids = [s['student_id'] for s in students]
+        all_marks_map = {sid: {sub: {f: {t: '' for t in ['Term 1', 'Term 2', 'Term 3']} for f in range(1, 5)} for sub in subjects} for sid in student_ids}
+        active_contexts = {sid: set() for sid in student_ids}
         
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                # Fetch marks in one big query
+                placeholders = ','.join(['?'] * len(student_ids))
+                cursor.execute(f"""
+                    SELECT student_id, form_level, term, subject, mark, academic_year
+                    FROM student_marks 
+                    WHERE student_id IN ({placeholders}) AND school_id = ?
+                """, (*student_ids, school_id))
+                
+                for row in cursor.fetchall():
+                    sid, f_level, r_term, sub, mark, m_year = row
+                    if sid in all_marks_map and f_level in years and m_year == years[f_level] and r_term in ['Term 1', 'Term 2', 'Term 3']:
+                        active_contexts[sid].add((f_level, r_term))
+                        sub_upper = str(sub).upper()
+                        matched_sub = 'LIFE SKILLS' if sub_upper.startswith('LIFE SKILLS') else ('SOCIAL STUDIES' if sub_upper == 'SOS' else sub_upper)
+                        if matched_sub in all_marks_map[sid]:
+                            all_marks_map[sid][matched_sub][f_level][r_term] = mark
+        except Exception as e:
+            app.logger.error(f"Error batch fetching marks: {e}")
+
+        # Batch fetch scholastic details
+        all_details_map = {}
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                placeholders = ','.join(['?'] * len(student_ids))
+                cursor.execute(f"SELECT student_id, details_json FROM student_scholastic_details WHERE student_id IN ({placeholders}) AND school_id = ?", (*student_ids, school_id))
+                for sid, d_json in cursor.fetchall():
+                    try: all_details_map[sid] = json.loads(d_json)
+                    except: all_details_map[sid] = {}
+        except Exception as e:
+            app.logger.error(f"Error batch fetching details: {e}")
+
+        # Ranking Cache to avoid O(N^2) or O(N^3) complexity
+        # Key: (f_level, term, year) -> {student_name: position, 'total': count}
+        ranking_memo = {}
+
+        def get_cached_rank(f_level, r_term, year, student_name):
+            key = (f_level, r_term, year)
+            if key not in ranking_memo:
+                res = db.get_student_rankings(f_level, r_term, year, school_id)
+                ranks = {r['name']: r.get('position', 'N/A') for r in res.get('rankings', [])}
+                ranking_memo[key] = {'ranks': ranks, 'total': res.get('total_students', 0)}
+            
+            data = ranking_memo[key]
+            return data['ranks'].get(student_name, 'N/A'), data['total']
+
         records = []
         for student in students:
-            student_id = student['student_id']
-            student_marks = {}
-            for subject in subjects:
-                student_marks[subject] = {
-                    1: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
-                    2: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
-                    3: {'Term 1': '', 'Term 2': '', 'Term 3': ''},
-                    4: {'Term 1': '', 'Term 2': '', 'Term 3': ''}
-                }
+            sid = student['student_id']
+            student_name = f"{student['first_name']} {student['last_name']}"
             
-            active_terms = set()
-            try:
-                with db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT form_level, term, subject, mark, academic_year
-                        FROM student_marks 
-                        WHERE student_id = ? AND school_id = ?
-                    """, (student_id, school_id))
-                    
-                    for row in cursor.fetchall():
-                        f_level, r_term, sub, mark, m_year = row
-                        if not isinstance(f_level, int) or r_term not in ['Term 1', 'Term 2', 'Term 3']:
-                            continue
-                        
-                        if f_level in years and m_year == years[f_level]:
-                            active_terms.add((f_level, r_term))
-                            sub_upper = str(sub).upper()
-                            if sub_upper.startswith('LIFE SKILLS'): matched_sub = 'LIFE SKILLS'
-                            elif sub_upper == 'SOS': matched_sub = 'SOCIAL STUDIES'
-                            else: matched_sub = sub_upper
-                                
-                            if matched_sub in student_marks and f_level in [1, 2, 3, 4]:
-                                student_marks[matched_sub][f_level][r_term] = mark
-            except Exception as db_err:
-                app.logger.error(f"Error fetching marks for student {student_id} in bulk print: {db_err}")
-
-            stats = {
-                1: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
-                2: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
-                3: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}},
-                4: {'Term 1': {'pos': '', 'total': ''}, 'Term 2': {'pos': '', 'total': ''}, 'Term 3': {'pos': '', 'total': ''}}
-            }
+            stats = {i: {t: {'pos': '', 'total': ''} for t in ['Term 1', 'Term 2', 'Term 3']} for i in range(1, 5)}
+            for f_level, r_term in active_contexts[sid]:
+                if f_level in range(1, 5):
+                    pos, total = get_cached_rank(f_level, r_term, years[f_level], student_name)
+                    stats[f_level][r_term]['pos'] = pos
+                    stats[f_level][r_term]['total'] = total
             
-            for f_level, r_term in active_terms:
-                if f_level in [1, 2, 3, 4]:
-                    try:
-                        result = db.get_student_position_and_points(student_id, r_term, years[f_level], f_level, school_id)
-                        stats[f_level][r_term]['pos'] = result.get('position', '')
-                        stats[f_level][r_term]['total'] = result.get('total_students', '')
-                    except Exception: pass
-                
-            scholastic_details = db.get_scholastic_details(student_id, school_id)
             records.append({
-                'student': student, 'marks': student_marks, 'stats': stats,
-                'details': scholastic_details, 'years': years
+                'student': student,
+                'marks': all_marks_map[sid],
+                'stats': stats,
+                'details': all_details_map.get(sid, {}),
+                'years': years
             })
             
         return render_template('scholastic_record_bulk.html', 
