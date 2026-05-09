@@ -181,6 +181,12 @@
                                         <button type="submit" class="btn btn-danger btn-lg" id="bulkPdfBtn">
                                             <i class="fas fa-print me-2"></i>Generate Bulk Records
                                         </button>
+                                        <div id="pdfLoadingStatus" class="alert alert-info mt-3 d-none">
+                                            <div class="d-flex align-items-center">
+                                                <div class="spinner-border spinner-border-sm me-2"></div>
+                                                <span>Generating PDF document. Please wait, this may take a few moments...</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -326,14 +332,24 @@ function exportBulkExcel() {
 function downloadBulkPdf() {
     const formLevel = document.getElementById('pdfFormSelect').value;
     const academicYear = document.getElementById('pdfYearSelect').value;
+    const btn = document.getElementById('bulkPdfBtn');
+    const loadingStatus = document.getElementById('pdfLoadingStatus');
     
     if (!formLevel || !academicYear) {
         alert('Please select both Form and Academic Year.');
         return;
     }
 
+    btn.disabled = true;
+    loadingStatus.classList.remove('d-none');
+    
     const url = `/scholastic-record/bulk-print?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`;
     window.open(url, '_blank');
+    
+    setTimeout(() => {
+        btn.disabled = false;
+        loadingStatus.classList.add('d-none');
+    }, 10000);
 }
 </script>
 {% endblock %}

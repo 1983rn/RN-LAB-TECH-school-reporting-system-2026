@@ -203,11 +203,16 @@
         </span>
     </div>
     <div class="data-entry-controls-compact">
-        <select id="termSelect" class="form-select" title="Select Term">
+        <select id="termSelect" class="form-select {% if selected_term != settings.get('selected_term') %}border-danger{% endif %}" title="Select Term" onchange="checkTermWarning()">
             {% for t in terms %}
             <option value="{{ t }}" {% if t==selected_term %}selected{% endif %}>{{ t }}</option>
             {% endfor %}
         </select>
+        {% if selected_term != settings.get('selected_term') %}
+        <div id="termWarning" class="text-danger fw-bold" style="font-size: 0.7rem; position: absolute; top: 100%; left: 0;">
+            <i class="fas fa-exclamation-triangle"></i> Not Current Term
+        </div>
+        {% endif %}
         <select id="yearSelect" class="form-select" title="Select Academic Year">
             {% for y in academic_years %}
             <option value="{{ y }}" {% if y==selected_academic_year %}selected{% endif %}>{{ y }}</option>

@@ -901,14 +901,15 @@ def form_data_entry(form_level):
     academic_years = [f'{y}-{y+1}' for y in range(2025, 2036)]
     
     # Get selected term and academic year from settings (these are set in the settings page)
-    selected_term = settings.get('selected_term', '')
-    selected_academic_year = settings.get('selected_academic_year', '')
+    # PRIORITIZE settings values to ensure term-based isolation is clear
+    selected_term = settings.get('selected_term', '').strip()
+    selected_academic_year = settings.get('selected_academic_year', '').strip()
 
-    # If no selected values, use defaults
-    if not selected_term and terms:
-        selected_term = terms[0]
-    if not selected_academic_year and academic_years:
-        selected_academic_year = academic_years[0]
+    # If no selected values, use defaults but WARN the user in the UI if possible
+    if not selected_term:
+        selected_term = 'Term 1' # Default fallback
+    if not selected_academic_year:
+        selected_academic_year = '2025-2026' # Default fallback
 
     # Get students enrolled in this form, term, and school - STRICT TERM ISOLATION
     try:
@@ -3167,12 +3168,17 @@ def bulk_print_scholastic_records():
                 
                 for row in cursor.fetchall():
                     sid, f_level, r_term, sub, mark, m_year = row
-                    if sid in all_marks_map and f_level in years and m_year == years[f_level] and r_term in ['Term 1', 'Term 2', 'Term 3']:
-                        active_contexts[sid].add((f_level, r_term))
-                        sub_upper = str(sub).upper()
-                        matched_sub = 'LIFE SKILLS' if sub_upper.startswith('LIFE SKILLS') else ('SOCIAL STUDIES' if sub_upper == 'SOS' else sub_upper)
-                        if matched_sub in all_marks_map[sid]:
-                            all_marks_map[sid][matched_sub][f_level][r_term] = mark
+                    
+                    # STRICT FILTER: Only include marks that match the academic year for this form level in the 4-year journey
+                    if sid in all_marks_map and f_level in years and m_year == years[f_level]:
+                        if r_term in ['Term 1', 'Term 2', 'Term 3']:
+                            active_contexts[sid].add((f_level, r_term))
+                            sub_upper = str(sub).upper().strip()
+                            # Handle subject variations
+                            matched_sub = 'LIFE SKILLS' if sub_upper.startswith('LIFE SKILLS') else ('SOCIAL STUDIES' if sub_upper == 'SOS' else sub_upper)
+                            
+                            if matched_sub in all_marks_map[sid]:
+                                all_marks_map[sid][matched_sub][f_level][r_term] = mark
         except Exception as e:
             app.logger.error(f"Error batch fetching marks: {e}")
 
