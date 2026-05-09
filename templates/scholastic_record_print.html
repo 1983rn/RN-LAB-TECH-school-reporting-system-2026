@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scholastic Record - {{ student.first_name }} {{ student.last_name }}</title>
+    <style>
+        @media print {
+            @page { margin: 10mm; size: A4 portrait; }
+            body { margin: 0; background: none; }
+            .page-break { page-break-after: always; }
+            .print-btn-container { display: none; }
+        }
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+        .print-btn-container {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .print-btn {
+            background-color: #0d6efd;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        .scholastic-page {
+            width: 210mm;
+            min-height: 297mm;
+            background: white;
+            margin: 0 auto 20px auto;
+            border: 4px double #000;
+            padding: 15mm;
+            box-sizing: border-box;
+            position: relative;
+        }
+        
+        /* Layout for Page 1 */
+        .class-header {
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .columns {
+            display: flex;
+            justify-content: space-between;
+        }
+        .col-left, .col-right {
+            width: 48%;
+            font-size: 13px;
+        }
+        .field-row {
+            margin-bottom: 12px;
+            display: flex;
+            align-items: flex-end;
+        }
+        .field-label {
+            margin-right: 5px;
+            white-space: nowrap;
+        }
+        .field-line {
+            display: inline-block;
+            min-height: 18px;
+            flex-grow: 0;
+            margin-left: 2px;
+        }
+        .field-value {
+            font-family: 'Courier New', Courier, monospace;
+            font-weight: bold;
+            padding: 0 2px;
+            text-decoration: underline dotted #000;
+            text-underline-offset: 5px;
+            text-decoration-thickness: 1px;
+        }
+        .multiline-row {
+            margin-bottom: 12px;
+        }
+        .multiline-line {
+            border-bottom: 1px dotted #000;
+            width: 100%;
+            height: 22px;
+            display: block;
+        }
+        /* Editable field inputs */
+        .field-input, .multiline-input, .multiline-textarea {
+            border: none !important;
+            outline: none;
+            font-family: 'Times New Roman', Times, serif;
+            font-size: 13px;
+            background: transparent;
+            text-decoration: underline dotted #000;
+            text-underline-offset: 5px;
+            text-decoration-thickness: 1px;
+        }
+        .field-input {
+            flex-grow: 1;
+            min-height: 18px;
+            padding: 0 3px;
+        }
+        .multiline-input {
+            width: 100%;
+            height: 22px;
+            display: block;
+            padding: 0 3px;
+            box-sizing: border-box;
+        }
+        .multiline-textarea {
+            width: 100%;
+            min-height: 22px;
+            line-height: 22px;
+            display: block;
+            padding: 0 3px;
+            box-sizing: border-box;
+            resize: none;
+            overflow: hidden;
+        }
+        .field-input:focus, .multiline-input:focus, .multiline-textarea:focus {
+            background-color: #fffde7 !important;
+        }
+        ::placeholder {
+            text-decoration: none !important;
+            color: #999;
+        }
+        @media print {
+            .field-input, .multiline-input, .multiline-textarea {
+                background-color: transparent !important;
+            }
+        }
+        
+        /* Layout for Page 2 */
+        .page2-header {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        table.scholastic-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        table.scholastic-table th, table.scholastic-table td {
+            border: 1px solid #000;
+            padding: 4px;
+            text-align: center;
+        }
+        table.scholastic-table th {
+            font-weight: bold;
+        }
+        table.scholastic-table td.subject-name {
+            text-align: left;
+            text-transform: uppercase;
+        }
+        table.scholastic-table td {
+            height: 20px;
+        }
+        
+        /* Photo Box Styles */
+        .photo-container-wrapper {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+        .class-header {
+            margin-bottom: 0;
+            font-size: 14px;
+            width: 60%;
+        }
+        .photo-box {
+            width: 35mm;
+            height: 45mm;
+            border: 2px dashed #999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            overflow: hidden;
+            position: relative;
+            background-color: #f8f9fa;
+        }
+        .photo-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: none;
+        }
+        .photo-placeholder {
+            text-align: center;
+            color: #666;
+            font-size: 11px;
+        }
+        @media print {
+            .photo-box {
+                border: 1px solid #000;
+                background-color: transparent;
+            }
+            .no-print {
+                display: none !important;
+            }
+        }
+        
+        /* Modal Styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            width: 300px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .modal-btn {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            background: #f8f9fa;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .modal-btn:hover {
+            background: #e9ecef;
+        }
+        #cameraContainer {
+            display: none;
+            margin-top: 10px;
+        }
+        #videoElement {
+            width: 100%;
+            max-width: 260px;
+            background: #000;
+        }
+    </style>
+</head>
+<body>
+    <div class="print-btn-container">
+        <button class="print-btn" onclick="window.print()">🖨️ Print Record</button>
+        <button class="print-btn" style="background-color: #198754; margin-left: 10px;" onclick="saveScholasticDetails()">💾 Save Information</button>
+    </div>
+
+    <!-- PAGE 1 -->
+    <div class="scholastic-page page-break">
+        <div class="photo-container-wrapper">
+            <div class="class-header field-row">
+                <span class="field-label">CLASS</span>
+                <span class="field-line">
+                    <span class="field-value">FORM {{ student.grade_level }}</span>
+                </span>
+            </div>
+            
+            <div class="photo-box no-print-bg" onclick="openPhotoModal()">
+                {% if scholastic_details.get('photo_data') %}
+                <img id="studentPhotoImg" src="{{ scholastic_details.get('photo_data') }}" alt="Student Photo" style="display: block;">
+                <div class="photo-placeholder" id="photoPlaceholder" style="display: none;">
+                {% else %}
+                <img id="studentPhotoImg" src="" alt="Student Photo" style="display: none;">
+                <div class="photo-placeholder" id="photoPlaceholder">
+                {% endif %}
+                    <div style="font-size: 24px; margin-bottom: 5px;" class="no-print">📷</div>
+                    <span class="no-print">Click to add photo</span>
+                    <span style="display: none;" class="print-only-text">STUDENT PHOTO</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="columns">
+            <!-- Left Column -->
+            <div class="col-left">
+                <div class="field-row">
+                    <span class="field-label">1. SURNAME</span>
+                    <span class="field-line">
+                        <span class="field-value">{{ student.last_name|upper }}</span>
+                    </span>
+                </div>
+                <div class="field-row" style="justify-content: space-between;">
+                    <div style="display: flex; flex-grow: 1;">
+                        <span class="field-label">2. FIRST NAMES</span>
+                        <span class="field-line">
+                            <span class="field-value">{{ student.first_name|upper }}</span>
+                        </span>
+                    </div>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">3. POSTAL ADDRESS</span>
+                    <textarea id="postal_address" class="multiline-textarea" rows="2" placeholder="Enter postal address...">{{ scholastic_details.get('postal_address', '') }}</textarea>
+                </div>
+                <div class="field-row">
+                    <span class="field-label">4. DATE OF BIRTH</span>
+                    <input type="text" id="dob" class="field-input" placeholder="DD/MM/YYYY" value="{{ scholastic_details.get('dob', student.date_of_birth or '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">5. TRIBE</span>
+                    <input type="text" id="tribe" class="field-input" placeholder="Enter tribe..." value="{{ scholastic_details.get('tribe', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">6. LANGUAGE</span>
+                    <input type="text" id="language" class="field-input" placeholder="Enter language..." value="{{ scholastic_details.get('language', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">7. VILLAGE</span>
+                    <input type="text" id="village" class="field-input" placeholder="Enter village..." value="{{ scholastic_details.get('village', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">8. T/A</span>
+                    <input type="text" id="ta" class="field-input" placeholder="Enter T/A..." value="{{ scholastic_details.get('ta', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">9. HOME DISTRICT</span>
+                    <input type="text" id="home_district" class="field-input" placeholder="Enter district..." value="{{ scholastic_details.get('home_district', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">10. RELIGION</span>
+                    <input type="text" id="religion" class="field-input" placeholder="Enter religion..." value="{{ scholastic_details.get('religion', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">11. NAME OF PARENT / GUARDIAN</span>
+                    <input type="text" id="parent_guardian_name" class="field-input" placeholder="Enter name..." value="{{ scholastic_details.get('parent_guardian_name', student.parent_guardian_name or '') }}">
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">12. ADDRESS OF PARENT / GUARDIAN</span>
+                    <textarea id="parent_guardian_address" class="multiline-textarea" rows="3" placeholder="Enter address...">{{ scholastic_details.get('parent_guardian_address', '') }}</textarea>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">13. NAME AND ADDRESS OF PERSON PAYING FEES</span>
+                    <textarea id="fee_payer_info" class="multiline-textarea" rows="3" placeholder="Enter name and address...">{{ scholastic_details.get('fee_payer_info', '') }}</textarea>
+                </div>
+                <div class="field-row">
+                    <span class="field-label">14. DATE OF ENTRY</span>
+                    <input type="text" id="date_of_entry" class="field-input" placeholder="DD/MM/YYYY" value="{{ scholastic_details.get('date_of_entry', '') }}">
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">15. PREVIOUS SCHOOL ATTENDED</span>
+                    <input type="text" id="prev_school" class="multiline-input" placeholder="Enter school name..." value="{{ scholastic_details.get('prev_school', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">16. DISTRICT</span>
+                    <input type="text" id="prev_school_district" class="field-input" placeholder="Enter district..." value="{{ scholastic_details.get('prev_school_district', '') }}">
+                </div>
+            </div>
+            
+            <!-- Right Column -->
+            <div class="col-right">
+                <div class="field-row">
+                    <span class="field-label">17. PRIMARY SCHOOL LAST ATTENDED</span>
+                    <input type="text" id="primary_school" class="field-input" placeholder="Enter school..." value="{{ scholastic_details.get('primary_school', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">18. DISTRICT</span>
+                    <input type="text" id="primary_school_district" class="field-input" placeholder="Enter district..." value="{{ scholastic_details.get('primary_school_district', '') }}">
+                </div>
+                <div class="field-row">
+                    <span class="field-label">19. DATE OF TRANSFER / WITHDRAWAL</span>
+                    <input type="text" id="transfer_date" class="field-input" placeholder="DD/MM/YYYY" value="{{ scholastic_details.get('transfer_date', '') }}">
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">20. REASONS FOR TRANSFER / WITHDRAWAL</span>
+                    <textarea id="transfer_reason" class="multiline-textarea" rows="3" placeholder="Enter reasons...">{{ scholastic_details.get('transfer_reason', '') }}</textarea>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">21. HOBBIES</span>
+                    <div class="field-row" style="margin-left: 20px; margin-top: 5px;">
+                        <span class="field-label">I.</span><input type="text" id="hobbies_1" class="field-input" placeholder="" value="{{ scholastic_details.get('hobbies_1', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">II.</span><input type="text" id="hobbies_2" class="field-input" placeholder="" value="{{ scholastic_details.get('hobbies_2', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">III.</span><input type="text" id="hobbies_3" class="field-input" placeholder="" value="{{ scholastic_details.get('hobbies_3', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">IV.</span><input type="text" id="hobbies_4" class="field-input" placeholder="" value="{{ scholastic_details.get('hobbies_4', '') }}">
+                    </div>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">22. FORM TEACHER'S COMMENT</span>
+                    <div class="field-row" style="margin-left: 20px; margin-top: 5px;">
+                        <span class="field-label">YEAR 1</span><input type="text" id="teacher_comment_1" class="field-input" placeholder="" value="{{ scholastic_details.get('teacher_comment_1', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">YEAR 2</span><input type="text" id="teacher_comment_2" class="field-input" placeholder="" value="{{ scholastic_details.get('teacher_comment_2', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">YEAR 3</span><input type="text" id="teacher_comment_3" class="field-input" placeholder="" value="{{ scholastic_details.get('teacher_comment_3', '') }}">
+                    </div>
+                    <div class="field-row" style="margin-left: 20px;">
+                        <span class="field-label">YEAR 4</span><input type="text" id="teacher_comment_4" class="field-input" placeholder="" value="{{ scholastic_details.get('teacher_comment_4', '') }}">
+                    </div>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">23. CAREER PREFERENCE</span>
+                    <textarea id="career_preference" class="multiline-textarea" rows="2" placeholder="Enter career preference...">{{ scholastic_details.get('career_preference', '') }}</textarea>
+                </div>
+                <div class="multiline-row">
+                    <span class="field-label">24. ADDITIONAL COMMENTS:</span>
+                    <textarea id="additional_comments" class="multiline-textarea" rows="6" placeholder="Enter comments...">{{ scholastic_details.get('additional_comments', '') }}</textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAGE 2 -->
+    <div class="scholastic-page">
+        <div class="page2-header">
+            <div>SCHOLASTICS RECORD</div>
+            <div>{{ school_name }}</div>
+        </div>
+        
+        <table class="scholastic-table">
+            <tr>
+                <th style="width: 20%;"></th>
+                <th colspan="3">FORM 1 / FROM <br>{{ years[1] }}</th>
+                <th colspan="3">FORM 2 / FROM <br>{{ years[2] }}</th>
+                <th colspan="3">FORM 3 / FROM <br>{{ years[3] }}</th>
+                <th colspan="3">FORM 4 / FROM <br>{{ years[4] }}</th>
+                <th rowspan="2" style="width: 8%;">JCE RESULTS</th>
+                <th rowspan="2" style="width: 8%;">MSCE RESULTS</th>
+            </tr>
+            <tr>
+                <th class="subject-name">SUBJECT</th>
+                <th style="width: 3.5%;">1</th>
+                <th style="width: 3.5%;">2</th>
+                <th style="width: 3.5%;">3</th>
+                <th style="width: 3.5%;">1</th>
+                <th style="width: 3.5%;">2</th>
+                <th style="width: 3.5%;">3</th>
+                <th style="width: 3.5%;">1</th>
+                <th style="width: 3.5%;">2</th>
+                <th style="width: 3.5%;">3</th>
+                <th style="width: 3.5%;">1</th>
+                <th style="width: 3.5%;">2</th>
+                <th style="width: 3.5%;">3</th>
+            </tr>
+            
+            {% for subject in subjects %}
+            <tr>
+                <td class="subject-name">{{ subject }}</td>
+                <td>{{ student_marks[subject][1]['Term 1'] }}</td>
+                <td>{{ student_marks[subject][1]['Term 2'] }}</td>
+                <td>{{ student_marks[subject][1]['Term 3'] }}</td>
+                
+                <td>{{ student_marks[subject][2]['Term 1'] }}</td>
+                <td>{{ student_marks[subject][2]['Term 2'] }}</td>
+                <td>{{ student_marks[subject][2]['Term 3'] }}</td>
+                
+                <td>{{ student_marks[subject][3]['Term 1'] }}</td>
+                <td>{{ student_marks[subject][3]['Term 2'] }}</td>
+                <td>{{ student_marks[subject][3]['Term 3'] }}</td>
+                
+                <td>{{ student_marks[subject][4]['Term 1'] }}</td>
+                <td>{{ student_marks[subject][4]['Term 2'] }}</td>
+                <td>{{ student_marks[subject][4]['Term 3'] }}</td>
+                
+                <td></td>
+                <td></td>
+            </tr>
+            {% endfor %}
+            
+            <tr>
+                <td class="subject-name">NUMBER IN<br>FORM</td>
+                <td>{{ stats[1]['Term 1']['total'] }}</td>
+                <td>{{ stats[1]['Term 2']['total'] }}</td>
+                <td>{{ stats[1]['Term 3']['total'] }}</td>
+                
+                <td>{{ stats[2]['Term 1']['total'] }}</td>
+                <td>{{ stats[2]['Term 2']['total'] }}</td>
+                <td>{{ stats[2]['Term 3']['total'] }}</td>
+                
+                <td>{{ stats[3]['Term 1']['total'] }}</td>
+                <td>{{ stats[3]['Term 2']['total'] }}</td>
+                <td>{{ stats[3]['Term 3']['total'] }}</td>
+                
+                <td>{{ stats[4]['Term 1']['total'] }}</td>
+                <td>{{ stats[4]['Term 2']['total'] }}</td>
+                <td>{{ stats[4]['Term 3']['total'] }}</td>
+                
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="subject-name">POSITION IN<br>FORM</td>
+                <td>{{ stats[1]['Term 1']['pos'] }}</td>
+                <td>{{ stats[1]['Term 2']['pos'] }}</td>
+                <td>{{ stats[1]['Term 3']['pos'] }}</td>
+                
+                <td>{{ stats[2]['Term 1']['pos'] }}</td>
+                <td>{{ stats[2]['Term 2']['pos'] }}</td>
+                <td>{{ stats[2]['Term 3']['pos'] }}</td>
+                
+                <td>{{ stats[3]['Term 1']['pos'] }}</td>
+                <td>{{ stats[3]['Term 2']['pos'] }}</td>
+                <td>{{ stats[3]['Term 3']['pos'] }}</td>
+                
+                <td>{{ stats[4]['Term 1']['pos'] }}</td>
+                <td>{{ stats[4]['Term 2']['pos'] }}</td>
+                <td>{{ stats[4]['Term 3']['pos'] }}</td>
+                
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="subject-name">DAYS ABSENT</td>
+                <td></td><td></td><td></td>
+                <td></td><td></td><td></td>
+                <td></td><td></td><td></td>
+                <td></td><td></td><td></td>
+                <td></td>
+                <td></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- Photo Modal -->
+    <div class="modal-overlay" id="photoModal">
+        <div class="modal-content no-print">
+            <h4 style="margin-top: 0;">Add Student Photo</h4>
+            <input type="file" id="photoUploadInput" accept="image/*" style="display: none;">
+            
+            <button class="modal-btn" onclick="triggerUpload()">
+                📁 Upload from Computer
+            </button>
+            
+            <button class="modal-btn" onclick="startCamera()">
+                📷 Take Photo with Camera
+            </button>
+            
+            <div id="cameraContainer">
+                <video id="videoElement" autoplay></video>
+                <button class="modal-btn" style="background: #28a745; color: white; border-color: #28a745;" onclick="capturePhoto()">
+                    Capture
+                </button>
+            </div>
+            
+            <hr style="margin: 15px 0;">
+            <button class="modal-btn" style="color: #dc3545;" onclick="removePhoto()">🗑️ Remove Photo</button>
+            <button class="modal-btn" onclick="closePhotoModal()">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        // Photo Capture Logic
+        const modal = document.getElementById('photoModal');
+        const fileInput = document.getElementById('photoUploadInput');
+        const imgElement = document.getElementById('studentPhotoImg');
+        const placeholder = document.getElementById('photoPlaceholder');
+        const cameraContainer = document.getElementById('cameraContainer');
+        const videoElement = document.getElementById('videoElement');
+        let stream = null;
+
+        function openPhotoModal() {
+            modal.style.display = 'flex';
+        }
+
+        function closePhotoModal() {
+            modal.style.display = 'none';
+            stopCamera();
+        }
+
+        function triggerUpload() {
+            fileInput.click();
+        }
+
+        fileInput.addEventListener('change', function(e) {
+            if (e.target.files && e.target.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    setPhoto(e.target.result);
+                    closePhotoModal();
+                };
+                reader.readAsDataURL(e.target.files[0]);
+            }
+        });
+
+        async function startCamera() {
+            cameraContainer.style.display = 'block';
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+                videoElement.srcObject = stream;
+            } catch (err) {
+                alert("Error accessing camera: " + err.message);
+                cameraContainer.style.display = 'none';
+            }
+        }
+
+        function capturePhoto() {
+            if (!stream) return;
+            const canvas = document.createElement('canvas');
+            canvas.width = videoElement.videoWidth;
+            canvas.height = videoElement.videoHeight;
+            canvas.getContext('2d').drawImage(videoElement, 0, 0);
+            setPhoto(canvas.toDataURL('image/jpeg'));
+            closePhotoModal();
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            cameraContainer.style.display = 'none';
+        }
+
+        function setPhoto(dataUrl) {
+            imgElement.src = dataUrl;
+            imgElement.style.display = 'block';
+            placeholder.style.display = 'none';
+        }
+
+        function removePhoto() {
+            imgElement.src = '';
+            imgElement.style.display = 'none';
+            placeholder.style.display = 'block';
+            closePhotoModal();
+        }
+        
+        // Setup print-specific text
+        window.onbeforeprint = function() {
+            if (imgElement.style.display === 'none' || !imgElement.src) {
+                document.querySelector('.print-only-text').style.display = 'block';
+                placeholder.style.display = 'block';
+            }
+        };
+        window.onafterprint = function() {
+            document.querySelector('.print-only-text').style.display = 'none';
+        };
+
+        // Scholastic Details Persistence
+        function saveScholasticDetails() {
+            const studentId = {{ student.student_id }};
+            const details = {
+                postal_address: document.getElementById('postal_address').value,
+                dob: document.getElementById('dob').value,
+                tribe: document.getElementById('tribe').value,
+                language: document.getElementById('language').value,
+                village: document.getElementById('village').value,
+                ta: document.getElementById('ta').value,
+                home_district: document.getElementById('home_district').value,
+                religion: document.getElementById('religion').value,
+                parent_guardian_name: document.getElementById('parent_guardian_name').value,
+                parent_guardian_address: document.getElementById('parent_guardian_address').value,
+                fee_payer_info: document.getElementById('fee_payer_info').value,
+                date_of_entry: document.getElementById('date_of_entry').value,
+                prev_school: document.getElementById('prev_school').value,
+                prev_school_district: document.getElementById('prev_school_district').value,
+                primary_school: document.getElementById('primary_school').value,
+                primary_school_district: document.getElementById('primary_school_district').value,
+                transfer_date: document.getElementById('transfer_date').value,
+                transfer_reason: document.getElementById('transfer_reason').value,
+                hobbies_1: document.getElementById('hobbies_1').value,
+                hobbies_2: document.getElementById('hobbies_2').value,
+                hobbies_3: document.getElementById('hobbies_3').value,
+                hobbies_4: document.getElementById('hobbies_4').value,
+                teacher_comment_1: document.getElementById('teacher_comment_1').value,
+                teacher_comment_2: document.getElementById('teacher_comment_2').value,
+                teacher_comment_3: document.getElementById('teacher_comment_3').value,
+                teacher_comment_4: document.getElementById('teacher_comment_4').value,
+                career_preference: document.getElementById('career_preference').value,
+                additional_comments: document.getElementById('additional_comments').value,
+                photo_data: document.getElementById('studentPhotoImg').src.startsWith('data:') ? document.getElementById('studentPhotoImg').src : ''
+            };
+
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '⌛ Saving...';
+            btn.disabled = true;
+
+            fetch('/api/save-scholastic-details', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    student_id: studentId,
+                    details: details
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    btn.innerHTML = '✅ Saved!';
+                    setTimeout(() => {
+                        btn.innerHTML = originalText;
+                        btn.disabled = false;
+                    }, 2000);
+                } else {
+                    alert('Error saving details: ' + data.message);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error saving details');
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            });
+        }
+
+        // Auto-expand textareas logic
+        function autoExpand(el) {
+            el.style.height = 'auto';
+            el.style.height = (el.scrollHeight) + 'px';
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const textareas = document.querySelectorAll('.multiline-textarea');
+            textareas.forEach(ta => {
+                // Initial expand
+                autoExpand(ta);
+                // Expand on input
+                ta.addEventListener('input', function() {
+                    autoExpand(this);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
