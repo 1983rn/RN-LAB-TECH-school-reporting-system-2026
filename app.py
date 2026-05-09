@@ -3044,6 +3044,10 @@ def print_scholastic_record(student_id):
             
         active_terms = set()
             
+        settings = db.get_school_settings(school_id)
+        current_term = settings.get('selected_term', 'Term 1')
+        current_year = settings.get('selected_academic_year', '2025-2026')
+
         try:
             with db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -3065,9 +3069,15 @@ def print_scholastic_record(student_id):
                     
                     # Only include marks that match the academic year for this form level in the 4-year journey
                     if f_level in years and m_year == years[f_level]:
-                        active_terms.add((f_level, r_term))
+                        # TERM SLIDE FIX: If current year mark is in Term 1 but school is in Term 2, 
+                        # display it as Term 2 as requested by user to fix mapping errors.
+                        target_term = r_term
+                        if m_year == current_year and r_term == 'Term 1' and current_term == 'Term 2':
+                            target_term = 'Term 2'
+                            
+                        active_terms.add((f_level, target_term))
                         
-                        sub_upper = str(sub).upper()
+                        sub_upper = str(sub).upper().strip()
                         if sub_upper.startswith('LIFE SKILLS'):
                             matched_sub = 'LIFE SKILLS'
                         elif sub_upper == 'SOS':
@@ -3076,7 +3086,7 @@ def print_scholastic_record(student_id):
                             matched_sub = sub_upper
                             
                         if matched_sub in student_marks and f_level in [1, 2, 3, 4]:
-                            student_marks[matched_sub][f_level][r_term] = mark
+                            student_marks[matched_sub][f_level][target_term] = mark
         except Exception as db_err:
             app.logger.error(f"Error fetching marks for scholastic record: {db_err}")
             
@@ -3166,19 +3176,29 @@ def bulk_print_scholastic_records():
                     WHERE student_id IN ({placeholders}) AND school_id = ?
                 """, (*student_ids, school_id))
                 
+                # Get current term/year for sliding logic
+                current_term = settings.get('selected_term', 'Term 1')
+                current_year = settings.get('selected_academic_year', '2025-2026')
+
                 for row in cursor.fetchall():
                     sid, f_level, r_term, sub, mark, m_year = row
                     
                     # STRICT FILTER: Only include marks that match the academic year for this form level in the 4-year journey
                     if sid in all_marks_map and f_level in years and m_year == years[f_level]:
                         if r_term in ['Term 1', 'Term 2', 'Term 3']:
-                            active_contexts[sid].add((f_level, r_term))
+                            # TERM SLIDE FIX: If current year mark is in Term 1 but school is in Term 2, 
+                            # display it as Term 2 as requested by user.
+                            target_term = r_term
+                            if m_year == current_year and r_term == 'Term 1' and current_term == 'Term 2':
+                                target_term = 'Term 2'
+
+                            active_contexts[sid].add((f_level, target_term))
                             sub_upper = str(sub).upper().strip()
                             # Handle subject variations
                             matched_sub = 'LIFE SKILLS' if sub_upper.startswith('LIFE SKILLS') else ('SOCIAL STUDIES' if sub_upper == 'SOS' else sub_upper)
                             
                             if matched_sub in all_marks_map[sid]:
-                                all_marks_map[sid][matched_sub][f_level][r_term] = mark
+                                all_marks_map[sid][matched_sub][f_level][target_term] = mark
         except Exception as e:
             app.logger.error(f"Error batch fetching marks: {e}")
 
