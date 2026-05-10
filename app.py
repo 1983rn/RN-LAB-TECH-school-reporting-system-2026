@@ -946,7 +946,8 @@ def form_data_entry(form_level):
                          terms=terms,
                          academic_years=academic_years,
                          selected_term=selected_term,
-                         selected_academic_year=selected_academic_year)
+                         selected_academic_year=selected_academic_year,
+                         settings=settings)
 
 
 

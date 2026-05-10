@@ -287,6 +287,26 @@
                                     onclick="printReportCard('{{ student.student_id }}', '{{ student.first_name }} {{ student.last_name }}')"
                                     title="Print report card for {{ student.first_name }} {{ student.last_name }}">
                                     <i class="fas fa-print"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr>
+                        <td colspan="{{ subjects|length + 3 }}" class="text-center py-5">
+                            <div class="text-muted">
+                                <i class="fas fa-users fa-3x mb-3 text-primary"></i>
+                                <h5>No Students Enrolled</h5>
+                                <p>Enroll students or upload an Excel file to begin entering marks for Form {{ form_level }}.</p>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="{{ subjects|length + 3 }}" class="text-end">
                             <strong class="text-primary">
                                 <i class="fas fa-users me-1"></i>Total Learners: {{ students|length }}
                             </strong>

@@ -316,6 +316,10 @@
                             onclick="printReportCard('{{ student.student_id }}', '{{ student.first_name }} {{ student.last_name }}')"
                             title="Print report card for {{ student.first_name }} {{ student.last_name }}">
                             <i class="fas fa-print"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
             {% endfor %}
             {% else %}
             <tr>
