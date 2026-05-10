@@ -172,7 +172,7 @@ class SchoolUserManager:
             return False
     
     def log_user_activity(self, user_id: int, activity_type: str, 
-                       form_level: int = None, details: str = None) -> bool:
+                       form_level: int = None, details: str = None, school_id: int = None) -> bool:
         """Log user activity for tracking and conflict prevention"""
         try:
             with self.db.get_connection() as conn:
@@ -180,9 +180,9 @@ class SchoolUserManager:
                 
                 cursor.execute("""
                     INSERT INTO user_activity_log 
-                    (user_id, activity_type, form_level, details)
-                    VALUES (%s, %s, %s, %s)
-                """, (user_id, activity_type, form_level, details))
+                    (user_id, activity_type, form_level, details, school_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user_id, activity_type, form_level, details, school_id))
                 
                 conn.commit()
                 return True
@@ -191,13 +191,13 @@ class SchoolUserManager:
             self.logger.error(f"Error logging activity: {e}")
             return False
     
-    def get_active_users_on_form(self, form_level: int, minutes: int = 5) -> List[Dict]:
-        """Get users currently active on a specific form"""
+    def get_active_users_on_form(self, form_level: int, school_id: int, minutes: int = 5) -> List[Dict]:
+        """Get users currently active on a specific form within a school"""
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Get recent activity for this form
+                # Get recent activity for this form and school
                 cutoff_time = (datetime.now() - timedelta(minutes=minutes))
                 
                 cursor.execute("""
@@ -205,10 +205,11 @@ class SchoolUserManager:
                     FROM school_users u
                     JOIN user_activity_log a ON u.user_id = a.user_id
                     WHERE a.form_level = %s 
+                    AND a.school_id = %s
                     AND a.timestamp > %s
                     AND a.activity_type IN ('login', 'data_entry', 'form_access')
                     ORDER BY u.user_id
-                """, (form_level, cutoff_time))
+                """, (form_level, school_id, cutoff_time))
                 
                 active_users = []
                 for row in cursor.fetchall():
@@ -225,7 +226,7 @@ class SchoolUserManager:
             self.logger.error(f"Error getting active users: {e}")
             return []
     
-    def check_form_access_conflict(self, user_id: int, form_level: int) -> Dict:
+    def check_form_access_conflict(self, user_id: int, form_level: int, school_id: int) -> Dict:
         """Check if user can access form without conflicts"""
         try:
             with self.db.get_connection() as conn:
@@ -233,8 +234,8 @@ class SchoolUserManager:
                 
                 # Get user's assigned forms
                 cursor.execute("""
-                    SELECT assigned_forms FROM school_users WHERE user_id = %s
-                """, (user_id,))
+                    SELECT assigned_forms FROM school_users WHERE user_id = %s AND school_id = %s
+                """, (user_id, school_id))
                 
                 result = cursor.fetchone()
                 if not result:
@@ -251,7 +252,7 @@ class SchoolUserManager:
                     }
                 
                 # Check for active conflicts
-                active_users = self.get_active_users_on_form(form_level, minutes=2)
+                active_users = self.get_active_users_on_form(form_level, school_id, minutes=2)
                 
                 # Filter out current user
                 other_active_users = [u for u in active_users if u['user_id'] != user_id]

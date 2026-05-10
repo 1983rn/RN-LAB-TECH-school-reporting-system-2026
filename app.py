@@ -422,7 +422,7 @@ def form_data_entry_multi_user(form_level):
                                    f"Your assigned forms: {assigned_forms}")
         
         # Check for access conflicts
-        access_check = user_manager.check_form_access_conflict(user_id, form_level)
+        access_check = user_manager.check_form_access_conflict(user_id, form_level, school_id)
         
         if not access_check['can_access']:
             return render_template('error.html', 
@@ -432,7 +432,8 @@ def form_data_entry_multi_user(form_level):
         # Log form access
         user_manager.log_user_activity(
             user_id, 'form_access', form_level,
-            details=f"User accessed Form {form_level} data entry"
+            details=f"User accessed Form {form_level} data entry",
+            school_id=school_id
         )
         
         # Get terms and academic years from school settings
@@ -563,7 +564,8 @@ def api_login():
                         # Log user activity
                         user_manager.log_user_activity(
                             user['user_id'], 'login', 
-                            details=f"User {user['username']} logged in"
+                            details=f"User {user['username']} logged in",
+                            school_id=school_id
                         )
                         
                         return jsonify({
@@ -677,9 +679,11 @@ def api_user_heartbeat():
         activity = data.get('activity', 'active')
         
         if user_id and form_level:
+            school_id = get_current_school_id()
             user_manager.log_user_activity(
                 user_id, activity, form_level,
-                details=f"User heartbeat: {activity}"
+                details=f"User heartbeat: {activity}",
+                school_id=school_id
             )
         
         return jsonify({'success': True})
@@ -699,7 +703,8 @@ def api_check_form_conflicts():
         form_level = data.get('form_level')
         
         if user_id and form_level:
-            access_check = user_manager.check_form_access_conflict(user_id, form_level)
+            school_id = get_current_school_id()
+            access_check = user_manager.check_form_access_conflict(user_id, form_level, school_id)
             return jsonify({
                 'success': True,
                 'conflict': not access_check['can_access'],
@@ -715,19 +720,21 @@ def api_check_form_conflicts():
 def api_user_activity(user_id):
     """Get user activity log"""
     try:
-        if not check_auth():
-            return jsonify({'success': False, 'message': 'Authentication required'}), 403
-        
-        # Get recent activities for the user
+        # Get school ID
+        school_id = get_current_school_id()
+        if not school_id:
+             return jsonify({'success': False, 'message': 'Authentication required'}), 403
+
+        # Get recent activities for the user, scoped to this school
         with db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT activity_type, form_level, details, timestamp
                 FROM user_activity_log
-                WHERE user_id = ?
+                WHERE user_id = ? AND school_id = ?
                 ORDER BY timestamp DESC
                 LIMIT 10
-            """, (user_id,))
+            """, (user_id, school_id))
             
             activities = []
             for row in cursor.fetchall():
@@ -753,10 +760,11 @@ def api_check_form_status():
         if not check_auth():
             return jsonify({'success': False, 'message': 'Authentication required'}), 403
         
-        # Get active conflicts for all forms
+        # Get active conflicts for all forms, scoped to current school
+        school_id = get_current_school_id()
         conflicts = []
         for form_level in [1, 2, 3, 4]:
-            active_users = user_manager.get_active_users_on_form(form_level, minutes=2)
+            active_users = user_manager.get_active_users_on_form(form_level, school_id, minutes=2)
             if active_users:
                 conflicts.append({
                     'form_level': form_level,
@@ -805,7 +813,8 @@ def api_delete_student():
                 if user_id:
                     user_manager.log_user_activity(
                         user_id, 'delete_student', form_level,
-                        details=f"Deleted student {student['first_name']} {student['last_name']} (ID: {student_id})"
+                        details=f"Deleted student {student['first_name']} {student['last_name']} (ID: {student_id})",
+                        school_id=school_id
                     )
             
             return jsonify({
@@ -854,7 +863,8 @@ def api_update_student_name():
                 if user_id:
                     user_manager.log_user_activity(
                         user_id, 'edit_student', form_level,
-                        details=f"Updated student name from {student['first_name']} {student['last_name']} to {first_name} {last_name} (ID: {student_id})"
+                        details=f"Updated student name from {student['first_name']} {student['last_name']} to {first_name} {last_name} (ID: {student_id})",
+                        school_id=school_id
                     )
             
             return jsonify({

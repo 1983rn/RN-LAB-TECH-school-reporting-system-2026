@@ -91,9 +91,8 @@ class PerformanceAnalyzer:
                     ORDER BY sm.mark DESC
                     LIMIT ?
                 """
-                
-                import pandas as pd
-                df = pd.read_sql_query(query, conn, params=(subject_name, term, academic_year, school_id, school_id, top_n))
+                # Use self.db._adapt_query to handle ? -> %s for Postgres
+                df = pd.read_sql_query(self.db._adapt_query(query), conn, params=(subject_name, term, academic_year, school_id, school_id, top_n))
                 
                 return {
                     'report_type': f'Best Performing Students - {subject_name}',
@@ -115,9 +114,9 @@ class PerformanceAnalyzer:
                 raise ValueError(f"Department '{department_name}' not found. Available departments: {list(self.departments.keys())}")
             
             department_subjects = self.departments[department_name]['subjects']
-            subjects_placeholder = ','.join(['?' for _ in department_subjects])
             
             with self.db.get_connection() as conn:
+                placeholders = ', '.join(['?'] * len(department_subjects))
                 query = f"""
                     SELECT 
                         s.student_id,
@@ -125,28 +124,24 @@ class PerformanceAnalyzer:
                         s.first_name,
                         s.last_name,
                         s.grade_level,
-                        AVG(sm.mark) as department_average,
-                        COUNT(sm.mark_id) as subjects_taken_in_dept,
-                        SUM(CASE WHEN sm.mark >= 50 THEN 1 ELSE 0 END) as subjects_passed_in_dept,
-                        MIN(sm.mark) as lowest_mark_in_dept,
-                        MAX(sm.mark) as highest_mark_in_dept
+                        sm.subject,
+                        sm.mark as percentage,
+                        sm.grade as letter_grade
                     FROM students s
                     JOIN student_marks sm ON s.student_id = sm.student_id
-                    WHERE sm.subject IN ({subjects_placeholder})
+                    WHERE sm.subject IN ({placeholders})
                     AND sm.term = ?
                     AND sm.academic_year = ?
                     AND sm.school_id = ?
                     AND s.school_id = ?
                     AND s.status = 'Active'
-                    GROUP BY s.student_id
-                    HAVING subjects_taken_in_dept >= 2
-                    ORDER BY department_average DESC, subjects_passed_in_dept DESC
+                    ORDER BY sm.mark DESC
                     LIMIT ?
                 """
                 
                 import pandas as pd
-                params = department_subjects + [term, academic_year, school_id, school_id, top_n]
-                df = pd.read_sql_query(query, conn, params=params)
+                params = list(department_subjects) + [term, academic_year, school_id, school_id, top_n]
+                df = pd.read_sql_query(self.db._adapt_query(query), conn, params=params)
                 
                 return {
                     'report_type': f'Best Performing Students - {department_name} Department',

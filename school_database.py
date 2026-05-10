@@ -310,8 +310,16 @@ class SchoolDatabase:
                 pta_fund TEXT,
                 sdf_fund TEXT,
                 boarding_fee TEXT,
-                updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                school_id INTEGER UNIQUE REFERENCES schools(school_id) ON DELETE CASCADE,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
+
+            # Migration: Ensure school_id exists in school_fees
+            try:
+                cur.execute("ALTER TABLE school_fees ADD COLUMN IF NOT EXISTS school_id INTEGER UNIQUE REFERENCES schools(school_id) ON DELETE CASCADE")
+                cur.execute("ALTER TABLE school_fees ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS subscription_notifications (
@@ -344,6 +352,7 @@ class SchoolDatabase:
             cur.execute("""
             CREATE TABLE IF NOT EXISTS user_activity_log (
                 activity_id SERIAL PRIMARY KEY,
+                school_id INTEGER REFERENCES schools(school_id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL,
                 activity_type TEXT NOT NULL,
                 form_level INTEGER,
@@ -419,13 +428,18 @@ class SchoolDatabase:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
 
-            # Create default fees if none exist
-            cur.execute("SELECT COUNT(*) FROM school_fees")
-            if cur.fetchone()[0] == 0:
+            # Initialize school_fees for schools that don't have them
+            cur.execute("""
+                SELECT s.school_id
+                FROM schools s
+                LEFT JOIN school_fees sf ON s.school_id = sf.school_id
+                WHERE sf.school_id IS NULL
+            """)
+            for (sid,) in cur.fetchall():
                 cur.execute("""
-                    INSERT INTO school_fees (pta_fund, sdf_fund, boarding_fee)
-                    VALUES (%s, %s, %s)
-                """, ("", "", ""))
+                    INSERT INTO school_fees (pta_fund, sdf_fund, boarding_fee, school_id)
+                    VALUES (%s, %s, %s, %s)
+                """, ("", "", "", sid))
 
             # Create default settings for schools that don't have them
             cur.execute("""
@@ -434,11 +448,12 @@ class SchoolDatabase:
                 LEFT JOIN school_settings ss ON s.school_id = ss.school_id
                 WHERE ss.school_id IS NULL
             """)
-            for school_id, school_name in cur.fetchall():
+            for sid, sname in cur.fetchall():
                 cur.execute("""
                     INSERT INTO school_settings (school_name, school_id)
                     VALUES (%s, %s)
-                """, ('', school_id))
+                """, (sname, sid))
+
 
             # Migration: Add total_students and aggregate_points to student_results if missing
             try:
@@ -1616,15 +1631,30 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 
                 # Get basic school settings - ONLY for this specific school_id
-                cursor.execute("SELECT * FROM school_settings WHERE school_id = ? ORDER BY setting_id DESC LIMIT 1", (school_id,))
-                
+                cursor.execute(self._adapt_query("SELECT * FROM school_settings WHERE school_id = ? ORDER BY setting_id DESC LIMIT 1"), (school_id,))
                 row = cursor.fetchone()
-                settings = {}
                 
                 if row:
                     columns = [description[0] for description in cursor.description]
                     settings = dict(zip(columns, row))
-                    # Ensure critical fields are strings (not None)
+                else:
+                    # Auto-initialize settings if missing for this school
+                    cursor.execute(self._adapt_query("SELECT school_name FROM schools WHERE school_id = ?"), (school_id,))
+                    s_row = cursor.fetchone()
+                    s_name = s_row[0] if s_row else "New School"
+                    
+                    cursor.execute(self._adapt_query("""
+                        INSERT INTO school_settings (school_name, school_id) 
+                        VALUES (?, ?) RETURNING *
+                    """), (s_name, school_id))
+                    row = cursor.fetchone()
+                    if row:
+                        columns = [description[0] for description in cursor.description]
+                        settings = dict(zip(columns, row))
+                    else:
+                        settings = {'school_name': s_name, 'school_id': school_id}
+
+                # Ensure critical fields are strings (not None)
                     for field in ['school_name', 'school_address', 'school_phone', 'school_email', 
                                  'selected_term', 'selected_academic_year', 'next_term_begins',
                                  'boys_uniform', 'girls_uniform', 'boarding_fee',
@@ -1702,21 +1732,17 @@ class SchoolDatabase:
     
     def calculate_aggregate_points_for_student(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int = None) -> int:
         """Calculate aggregate points for a student (best 6 subjects)."""
+        if not school_id:
+            return 54 if form_level >= 3 else 0
+            
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id:
-                    cursor.execute("""
-                        SELECT mark FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
-                        ORDER BY mark DESC LIMIT 6
-                    """, (student_id, term, academic_year, school_id))
-                else:
-                    cursor.execute("""
-                        SELECT mark FROM student_marks 
-                        WHERE student_id = ? AND term = ? AND academic_year = ?
-                        ORDER BY mark DESC LIMIT 6
-                    """, (student_id, term, academic_year))
+                cursor.execute("""
+                    SELECT mark FROM student_marks 
+                    WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
+                    ORDER BY mark DESC LIMIT 6
+                """, (student_id, term, academic_year, school_id))
                 
                 best_marks = [row[0] for row in cursor.fetchall()]
                 
@@ -1802,18 +1828,12 @@ class SchoolDatabase:
                         WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')
                     """, (form_level, school_id))
                 else:
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM students 
-                        WHERE grade_level = ? AND (status = 'Active' OR status IS NULL OR status = '')
-                    """, (form_level,))
+                    return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 total_class_size = cursor.fetchone()[0]
 
                 # If no active students found, fallback to total enrollment for this grade
-                if not total_class_size:
-                    if school_id:
-                        cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
-                    else:
-                        cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ?", (form_level,))
+                if not total_class_size and school_id:
+                    cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
                     total_class_size = cursor.fetchone()[0]
                 
                 # Get ALL students who have marks for this form, term, and academic year
@@ -1826,13 +1846,7 @@ class SchoolDatabase:
                         ORDER BY s.first_name, s.last_name
                     """, (form_level, term, academic_year, school_id))
                 else:
-                    cursor.execute("""
-                        SELECT DISTINCT s.student_id, s.first_name, s.last_name 
-                        FROM students s
-                        JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
-                        ORDER BY s.first_name, s.last_name
-                    """, (form_level, term, academic_year))
+                    return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
                 all_students = cursor.fetchall()
                 rankings = []
@@ -1850,16 +1864,7 @@ class SchoolDatabase:
                         GROUP BY sm.student_id
                     """, (form_level, term, academic_year, school_id))
                 else:
-                    cursor.execute(f"""
-                        SELECT sm.student_id,
-                               AVG(sm.mark) as average,
-                               SUM(sm.mark) as total_marks,
-                               COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
-                               COUNT(sm.mark) as total_subjects
-                        FROM student_marks sm
-                        WHERE sm.form_level = %s AND sm.term = %s AND sm.academic_year = %s
-                        GROUP BY sm.student_id
-                    """, (form_level, term, academic_year))
+                    return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
                 stats_map = {row[0]: row[1:] for row in cursor.fetchall()}
                 
@@ -1871,10 +1876,7 @@ class SchoolDatabase:
                         WHERE form_level = %s AND term = %s AND academic_year = %s AND school_id = %s
                     """, (form_level, term, academic_year, school_id))
                 else:
-                    cursor.execute("""
-                        SELECT student_id, subject, mark FROM student_marks
-                        WHERE form_level = %s AND term = %s AND academic_year = %s
-                    """, (form_level, term, academic_year))
+                    return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
                 all_marks_rows = cursor.fetchall()
                 student_marks_map = defaultdict(list)
@@ -2244,30 +2246,19 @@ class SchoolDatabase:
     def get_top_performers(self, form_level: int, term: str, academic_year: str, limit: int = 10, school_id: int = None) -> List[Dict]:
         """Get top performing students"""
         try:
+            if not school_id: return []
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id:
-                    cursor.execute("""
-                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
-                        FROM students s
-                        JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ? AND sm.school_id = ?
-                        GROUP BY s.student_id, s.first_name, s.last_name
-                        HAVING COUNT(sm.mark_id) >= 6
-                        ORDER BY total_marks DESC, average DESC
-                        LIMIT ?
-                    """, (form_level, term, academic_year, school_id, school_id, limit))
-                else:
-                    cursor.execute("""
-                        SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
-                        FROM students s
-                        JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
-                        GROUP BY s.student_id, s.first_name, s.last_name
-                        HAVING COUNT(sm.mark_id) >= 6
-                        ORDER BY total_marks DESC, average DESC
-                        LIMIT ?
-                    """, (form_level, term, academic_year, limit))
+                cursor.execute(self._adapt_query("""
+                    SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
+                    FROM students s
+                    JOIN student_marks sm ON s.student_id = sm.student_id
+                    WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND s.school_id = ? AND sm.school_id = ?
+                    GROUP BY s.student_id, s.first_name, s.last_name
+                    HAVING COUNT(sm.mark_id) >= 6
+                    ORDER BY total_marks DESC, average DESC
+                    LIMIT ?
+                """), (form_level, term, academic_year, school_id, school_id, limit))
                 
                 performers = []
                 for row in cursor.fetchall():
@@ -2290,29 +2281,19 @@ class SchoolDatabase:
     def get_subject_analysis(self, form_level: int, term: str, academic_year: str, school_id: int = None) -> Dict:
         """Get subject performance analysis"""
         try:
+            if not school_id: return {'subjects': [], 'total_subjects': 0}
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                if school_id:
-                    cursor.execute("""
-                        SELECT sm.subject, AVG(sm.mark) as avg_mark, COUNT(*) as student_count,
-                               MIN(sm.mark) as min_mark, MAX(sm.mark) as max_mark
-                        FROM student_marks sm
-                        JOIN students s ON sm.student_id = s.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
-                        GROUP BY sm.subject
-                        ORDER BY avg_mark DESC
-                    """, (form_level, term, academic_year, school_id))
-                else:
-                    cursor.execute("""
-                        SELECT sm.subject, AVG(sm.mark) as avg_mark, COUNT(*) as student_count,
-                               MIN(sm.mark) as min_mark, MAX(sm.mark) as max_mark
-                        FROM student_marks sm
-                        JOIN students s ON sm.student_id = s.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
-                        GROUP BY sm.subject
-                        ORDER BY avg_mark DESC
-                    """, (form_level, term, academic_year))
+                cursor.execute(self._adapt_query("""
+                    SELECT sm.subject, AVG(sm.mark) as avg_mark, COUNT(*) as student_count,
+                           MIN(sm.mark) as min_mark, MAX(sm.mark) as max_mark
+                    FROM student_marks sm
+                    JOIN students s ON sm.student_id = s.student_id
+                    WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
+                    GROUP BY sm.subject
+                    ORDER BY avg_mark DESC
+                """), (form_level, term, academic_year, school_id))
                 
                 subjects = []
                 for row in cursor.fetchall():
@@ -2320,20 +2301,12 @@ class SchoolDatabase:
                     
                     # Calculate pass rate
                     pass_threshold = 50 if form_level <= 2 else 40
-                    if school_id:
-                        cursor.execute("""
-                            SELECT COUNT(*) FROM student_marks sm
-                            JOIN students s ON sm.student_id = s.student_id
-                            WHERE sm.subject = ? AND sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? 
-                            AND sm.mark >= ? AND sm.school_id = ?
-                        """, (subject, form_level, term, academic_year, pass_threshold, school_id))
-                    else:
-                        cursor.execute("""
-                            SELECT COUNT(*) FROM student_marks sm
-                            JOIN students s ON sm.student_id = s.student_id
-                            WHERE sm.subject = ? AND sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? 
-                            AND sm.mark >= ?
-                        """, (subject, form_level, term, academic_year, pass_threshold))
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM student_marks sm
+                        JOIN students s ON sm.student_id = s.student_id
+                        WHERE sm.subject = ? AND sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? 
+                        AND sm.mark >= ? AND sm.school_id = ?
+                    """, (subject, form_level, term, academic_year, pass_threshold, school_id))
                     
                     passed_count = cursor.fetchone()[0]
                     pass_rate = (passed_count / student_count * 100) if student_count > 0 else 0
@@ -2358,30 +2331,21 @@ class SchoolDatabase:
     def get_top_performers_by_category(self, category: str, form_level: int, term: str, academic_year: str, school_id: int = None) -> List[Dict]:
 
         try:
+            if not school_id: return []
             if category == 'overall':
                 # For overall, get students with best performance
                 with self.get_connection() as conn:
                     cursor = conn.cursor()
                     if form_level >= 3:
                         # For Forms 3&4: Sort by lowest aggregate points (best performance)
-                        if school_id:
-                            cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
-                                FROM students s
-                                JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
-                                GROUP BY s.student_id, s.first_name, s.last_name
-                                HAVING COUNT(sm.mark_id) >= 6
-                            """, (form_level, term, academic_year, school_id))
-                        else:
-                            cursor.execute("""
-                                SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
-                                FROM students s
-                                JOIN student_marks sm ON s.student_id = sm.student_id
-                                WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
-                                GROUP BY s.student_id, s.first_name, s.last_name
-                                HAVING COUNT(sm.mark_id) >= 6
-                            """, (form_level, term, academic_year))
+                        cursor.execute(self._adapt_query("""
+                            SELECT s.student_id, s.first_name, s.last_name, AVG(sm.mark) as average, SUM(sm.mark) as total_marks
+                            FROM students s
+                            JOIN student_marks sm ON s.student_id = sm.student_id
+                            WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
+                            GROUP BY s.student_id, s.first_name, s.last_name
+                            HAVING COUNT(sm.mark_id) >= 6
+                        """), (form_level, term, academic_year, school_id))
                         
                         performers = []
                         for row in cursor.fetchall():
@@ -2472,19 +2436,7 @@ class SchoolDatabase:
                         LIMIT 10
                     """, (form_level, term, academic_year, school_id, *subjects))
                 else:
-                    cursor.execute(f"""
-                        SELECT s.student_id, s.first_name, s.last_name, 
-                               SUM(sm.mark) as department_total,
-                               COUNT(DISTINCT sm.subject) as subjects_taken
-                        FROM students s
-                        JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ?
-                        AND sm.subject IN ({placeholders})
-                        GROUP BY s.student_id, s.first_name, s.last_name
-                        HAVING COUNT(DISTINCT sm.subject) >= 1
-                        ORDER BY department_total DESC
-                        LIMIT 10
-                    """, (form_level, term, academic_year, *subjects))
+                    return []
                 
                 performers = []
                 for row in cursor.fetchall():
@@ -2500,10 +2452,7 @@ class SchoolDatabase:
                             WHERE student_id = ? AND term = ? AND academic_year = ? AND school_id = ?
                         """, (student_id, term, academic_year, school_id))
                     else:
-                        cursor.execute("""
-                            SELECT AVG(mark) FROM student_marks 
-                            WHERE student_id = ? AND term = ? AND academic_year = ?
-                        """, (student_id, term, academic_year))
+                        return []
                     overall_avg_result = cursor.fetchone()
                     overall_average = overall_avg_result[0] if overall_avg_result and overall_avg_result[0] else 0
                     
@@ -2524,37 +2473,6 @@ class SchoolDatabase:
             self.logger.error(f"Error getting top performers: {e}")
             return []
     
-    def calculate_aggregate_points_for_student(self, student_id: int, term: str, academic_year: str, form_level: int, school_id: int = None) -> int:
-        """Calculate aggregate points for Forms 3&4 (sum of best 6 subjects converted to MSCE grade points)"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT mark FROM student_marks 
-                    WHERE student_id = ? AND term = ? AND academic_year = ?
-                    ORDER BY mark DESC
-                    LIMIT 6
-                """, (student_id, term, academic_year))
-                
-                marks = [row[0] for row in cursor.fetchall()]
-                if len(marks) < 6:
-                    return None  # Not enough subjects
-                
-                # Convert marks to MSCE grade points and sum them
-                aggregate_points = 0
-                for mark in marks:
-                    grade = self.calculate_grade(mark, form_level, school_id)
-                    if grade.isdigit():
-                        aggregate_points += int(grade)
-                    else:
-                        aggregate_points += 9  # Default for non-numeric grades
-                
-                return aggregate_points
-                
-        except Exception as e:
-            self.logger.error(f"Error calculating aggregate points: {e}")
-            return None
-
     def get_subjects_by_form(self, form_level: int, school_id: int = None) -> List[str]:
         """Get list of subjects for a specific form level and school"""
         try:
@@ -2567,11 +2485,7 @@ class SchoolDatabase:
                         ORDER BY subject
                     """, (form_level, school_id))
                 else:
-                    cursor.execute("""
-                        SELECT DISTINCT subject FROM subject_teachers 
-                        WHERE form_level = ?
-                        ORDER BY subject
-                    """, (form_level,))
+                    return []
                 
                 subjects = [row[0] for row in cursor.fetchall()]
                 
@@ -2587,18 +2501,17 @@ class SchoolDatabase:
             return []
 
     def get_subject_teachers(self, form_level: int = None, school_id: int = None) -> Dict[str, str]:
-        """Get subject teachers for specific form level and school"""
+        """Get subject teachers for specific form level and school - strictly isolated."""
         try:
+            if school_id is None:
+                return {}
+                
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if form_level and school_id:
-                    cursor.execute("SELECT subject, teacher_name FROM subject_teachers WHERE form_level = ? AND school_id = ?", (form_level, school_id))
-                elif form_level:
-                    cursor.execute("SELECT subject, teacher_name FROM subject_teachers WHERE form_level = ?", (form_level,))
-                elif school_id:
-                    cursor.execute("SELECT subject, teacher_name FROM subject_teachers WHERE school_id = ?", (school_id,))
+                if form_level:
+                    cursor.execute(self._adapt_query("SELECT subject, teacher_name FROM subject_teachers WHERE form_level = ? AND school_id = ? ORDER BY subject"), (form_level, school_id))
                 else:
-                    cursor.execute("SELECT subject, teacher_name FROM subject_teachers")
+                    cursor.execute(self._adapt_query("SELECT subject, teacher_name FROM subject_teachers WHERE school_id = ? ORDER BY subject"), (school_id,))
                 return {row[0]: row[1] for row in cursor.fetchall()}
         except Exception as e:
             self.logger.error(f"Error getting subject teachers: {e}")
@@ -2609,12 +2522,12 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     INSERT INTO subject_teachers (subject, form_level, teacher_name, updated_date, school_id)
                     VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT (subject, form_level, school_id)
                     DO UPDATE SET teacher_name = EXCLUDED.teacher_name, updated_date = EXCLUDED.updated_date
-                """, (subject, form_level, teacher_name, datetime.now().isoformat(), school_id))
+                """), (subject, form_level, teacher_name, datetime.now().isoformat(), school_id))
                 self.logger.info(f"Updated teacher for {subject} Form {form_level}: {teacher_name}")
         except Exception as e:
             self.logger.error(f"Error updating subject teacher: {e}")
@@ -2623,12 +2536,12 @@ class SchoolDatabase:
     def delete_subject_teacher(self, subject: str, form_level: int, school_id: int = None) -> bool:
         """Delete a subject teacher mapping for a form and school. Returns True if a row was deleted."""
         try:
+            if school_id is None:
+                return False
+                
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                if school_id is not None:
-                    cursor.execute("DELETE FROM subject_teachers WHERE subject = ? AND form_level = ? AND school_id = ?", (subject, form_level, school_id))
-                else:
-                    cursor.execute("DELETE FROM subject_teachers WHERE subject = ? AND form_level = ?", (subject, form_level))
+                cursor.execute("DELETE FROM subject_teachers WHERE subject = ? AND form_level = ? AND school_id = ?", (subject, form_level, school_id))
                 return cursor.rowcount > 0
         except Exception as e:
             self.logger.error(f"Error deleting subject teacher: {e}")
@@ -2658,16 +2571,7 @@ class SchoolDatabase:
                         ORDER BY sm.mark DESC, s.first_name, s.last_name
                     """, (form_level, subject, term, academic_year, school_id))
                 else:
-                    cursor.execute("""
-                        SELECT DISTINCT s.student_id, s.first_name, s.last_name, sm.mark
-                        FROM students s
-                        JOIN student_marks sm ON s.student_id = sm.student_id
-                        WHERE sm.form_level = ? 
-                          AND sm.subject = ? 
-                          AND sm.term = ? 
-                          AND sm.academic_year = ?
-                        ORDER BY sm.mark DESC, s.first_name, s.last_name
-                    """, (form_level, subject, term, academic_year))
+                    return "0/0"
                 
                 results = cursor.fetchall()
                 
@@ -2795,12 +2699,12 @@ class SchoolDatabase:
                 
                 for academic_year in academic_years:
                     for term in terms:
-                        cursor.execute("""
+                        cursor.execute(self._adapt_query("""
                             INSERT INTO academic_periods 
                             (academic_year, period_name, school_id, created_date)
                             VALUES (?, ?, ?, ?)
                             ON CONFLICT (academic_year, period_name, school_id) DO NOTHING
-                        """, (academic_year.strip(), term.strip(), school_id, datetime.now().isoformat()))
+                        """), (academic_year.strip(), term.strip(), school_id, datetime.now().isoformat()))
                 
                 conn.commit()
                 self.logger.info(f"Updated academic periods")
@@ -2819,11 +2723,11 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 
                 # ONLY get periods for this specific school_id (no OR school_id IS NULL)
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     SELECT * FROM academic_periods 
                     WHERE school_id = ?
                     ORDER BY academic_year DESC, period_name
-                """, (school_id,))
+                """), (school_id,))
                 
                 rows = cursor.fetchall()
                 columns = [description[0] for description in cursor.description]
@@ -2886,32 +2790,39 @@ class SchoolDatabase:
                 'periods_with_data': []
             }
     
-    def get_school_fees(self) -> Dict:
-        """Get school fee information"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT pta_fund, sdf_fund, boarding_fee FROM school_fees ORDER BY id DESC LIMIT 1")
-                row = cursor.fetchone()
-                
-                if row:
-                    return {
-                        'pta_fund': row[0],
-                        'sdf_fund': row[1],
-                        'boarding_fee': row[2]
-                    }
-                else:
-                    return {
-                        'pta_fund': 'MK 50,000',
-                        'sdf_fund': 'MK 30,000',
-                        'boarding_fee': 'MK 150,000'
-                    }
-        except Exception as e:
-            self.logger.error(f"Error getting school fees: {e}")
+    def get_school_fees(self, school_id: int = None) -> Dict:
+        """Get school fee information - isolated by school_id."""
+        if not school_id:
             return {
                 'pta_fund': 'MK 50,000',
                 'sdf_fund': 'MK 30,000',
                 'boarding_fee': 'MK 150,000'
+            }
+            
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._adapt_query("SELECT pta_fund, sdf_fund, boarding_fee FROM school_fees WHERE school_id = ? ORDER BY id DESC LIMIT 1"), (school_id,))
+                row = cursor.fetchone()
+                
+                if row:
+                    return {
+                        'pta_fund': row[0] or '',
+                        'sdf_fund': row[1] or '',
+                        'boarding_fee': row[2] or ''
+                    }
+                else:
+                    return {
+                        'pta_fund': '',
+                        'sdf_fund': '',
+                        'boarding_fee': ''
+                    }
+        except Exception as e:
+            self.logger.error(f"Error getting school fees for school {school_id}: {e}")
+            return {
+                'pta_fund': '',
+                'sdf_fund': '',
+                'boarding_fee': ''
             }
     
     def delete_student_marks(self, student_id: int, school_id: int):
@@ -2919,7 +2830,7 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM student_marks WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                cursor.execute(self._adapt_query("DELETE FROM student_marks WHERE student_id = ? AND school_id = ?"), (student_id, school_id))
                 self.logger.info(f"Deleted all marks for student {student_id} (School: {school_id})")
         except Exception as e:
             self.logger.error(f"Error deleting student marks: {e}")
@@ -2933,7 +2844,7 @@ class SchoolDatabase:
             
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM students WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                cursor.execute(self._adapt_query("DELETE FROM students WHERE student_id = ? AND school_id = ?"), (student_id, school_id))
                 
                 if cursor.rowcount > 0:
                     self.logger.info(f"Deleted student {student_id}")
@@ -2950,11 +2861,11 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     UPDATE students 
                     SET first_name = ?, last_name = ? 
                     WHERE student_id = ? AND school_id = ?
-                """, (first_name, last_name, student_id, school_id))
+                """), (first_name, last_name, student_id, school_id))
                 
                 if cursor.rowcount > 0:
                     self.logger.info(f"Updated student {student_id} name to {first_name} {last_name}")
@@ -2974,18 +2885,18 @@ class SchoolDatabase:
             
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     SELECT school_id, school_name, username, status, subscription_status, days_remaining, must_change_password
                     FROM schools 
                     WHERE username = ? AND password_hash = ? AND status = 'active'
-                """, (username, password_hash))
+                """), (username, password_hash))
                 
                 row = cursor.fetchone()
                 if row:
                     # Update last login
-                    cursor.execute("""
+                    cursor.execute(self._adapt_query("""
                         UPDATE schools SET last_login = ? WHERE school_id = ?
-                    """, (datetime.now().isoformat(), row[0]))
+                    """), (datetime.now().isoformat(), row[0]))
                     
                     return {
                         'school_id': row[0],
@@ -3016,11 +2927,11 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 
                 # All columns exist in Postgres schema — always use full insert
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     INSERT INTO schools (school_name, username, password_hash, subscription_status, 
                                        subscription_start_date, subscription_end_date, days_remaining, must_change_password)
                     VALUES (?, ?, ?, 'trial', ?, ?, 90, 1)
-                """, (school_data['school_name'], school_data['username'], password_hash, 
+                """), (school_data['school_name'], school_data['username'], password_hash, 
                       start_date.isoformat(), end_date.isoformat()))
                 
                 school_id = cursor.lastrowid
@@ -3038,9 +2949,9 @@ class SchoolDatabase:
             new_hash = hashlib.sha256(new_password.encode()).hexdigest()
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     UPDATE schools SET password_hash = ?, must_change_password = 0 WHERE school_id = ?
-                """, (new_hash, school_id))
+                """), (new_hash, school_id))
                 self.logger.info(f"Updated password for school {school_id}")
         except Exception as e:
             self.logger.error(f"Error updating school password: {e}")
@@ -3053,9 +2964,9 @@ class SchoolDatabase:
             new_hash = hashlib.sha256(new_password.encode()).hexdigest()
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     UPDATE schools SET password_hash = ?, must_change_password = 1 WHERE school_id = ?
-                """, (new_hash, school_id))
+                """), (new_hash, school_id))
                 self.logger.info(f"Reset credentials for school {school_id}")
         except Exception as e:
             self.logger.error(f"Error resetting school credentials: {e}")
@@ -3095,9 +3006,9 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     UPDATE schools SET status = ? WHERE school_id = ?
-                """, (status, school_id))
+                """), (status, school_id))
                 self.logger.info(f"Updated school {school_id} status to {status}")
         except Exception as e:
             self.logger.error(f"Error updating school status: {e}")
@@ -3112,14 +3023,14 @@ class SchoolDatabase:
             
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     UPDATE schools 
                     SET subscription_status = 'paid', 
                         subscription_start_date = ?, 
                         subscription_end_date = ?,
                         days_remaining = ?
                     WHERE school_id = ?
-                """, (start_date.isoformat(), end_date.isoformat(), months * 30, school_id))
+                """), (start_date.isoformat(), end_date.isoformat(), months * 30, school_id))
                 
                 self.logger.info(f"Granted {months} months subscription to school {school_id}")
         except Exception as e:
@@ -3133,7 +3044,7 @@ class SchoolDatabase:
                 cursor = conn.cursor()
                 
                 if school_id:
-                    schools_query = "SELECT school_id, school_name, days_remaining FROM schools WHERE school_id = ?"
+                    schools_query = self._adapt_query("SELECT school_id, school_name, days_remaining FROM schools WHERE school_id = ?")
                     cursor.execute(schools_query, (school_id,))
                 else:
                     schools_query = "SELECT school_id, school_name, days_remaining FROM schools WHERE subscription_status = 'trial' OR days_remaining <= 30"
@@ -3144,10 +3055,10 @@ class SchoolDatabase:
                 for school_id, school_name, days_remaining in schools:
                     message = f"Dear {school_name}, your subscription expires in {days_remaining} days. Please renew to continue using the system."
                     
-                    cursor.execute("""
+                    cursor.execute(self._adapt_query("""
                         INSERT INTO subscription_notifications (school_id, message, notification_type)
                         VALUES (?, ?, 'reminder')
-                    """, (school_id, message))
+                    """), (school_id, message))
                 
                 self.logger.info(f"Sent subscription reminders to {len(schools)} schools")
                 return len(schools)
@@ -3198,9 +3109,9 @@ class SchoolDatabase:
                         end_date = datetime.fromisoformat(end_date_str)
                         days_remaining = (end_date - datetime.now()).days
                         
-                        cursor.execute("""
+                        cursor.execute(self._adapt_query("""
                             UPDATE schools SET days_remaining = ? WHERE school_id = ?
-                        """, (max(0, days_remaining), school_id))
+                        """), (max(0, days_remaining), school_id))
                     except:
                         continue
                 
