@@ -434,8 +434,21 @@ def bulk_print_scholastic_records():
         form_level = int(request.args.get('form_level', 1))
         academic_year = request.args.get('academic_year', '2025-2026')
         
-        students = db.get_students_by_grade(form_level, school_id)
         settings = db.get_school_settings(school_id)
+        selected_term = settings.get('selected_term', 'Term 1')
+        
+        # Use enrollment-based student list (same as Data Entry) to prevent duplicates
+        students = db.get_students_enrolled_in_term(form_level, selected_term, academic_year, school_id)
+        
+        # Deduplicate by student_id
+        seen_ids = set()
+        unique_students = []
+        for s in students:
+            sid = s.get('student_id')
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                unique_students.append(s)
+        students = unique_students
         school_name = settings.get('school_name', 'School Reporting System')
         
         subjects = [

@@ -2057,12 +2057,18 @@ def api_export_bulk_scholastic_excel():
         
         selected_term = settings.get('selected_term', 'Term 1')
         
-        # Get all students for this form/term/year using Data Entry as source
+        # Get all students for this form/term/year using Data Entry as source (single source of truth)
         students = db.get_students_enrolled_in_term(form_level, selected_term, academic_year, school_id)
-            
-        if not students:
-            # Try getting students by grade if term enrollment is empty (fallback)
-            students = db.get_students_by_grade(form_level, school_id)
+        
+        # Deduplicate by student_id to prevent the same student appearing multiple times
+        seen_ids = set()
+        unique_students = []
+        for s in students:
+            sid = s.get('student_id')
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                unique_students.append(s)
+        students = unique_students
             
         if not students:
             return f"No students found in Form {form_level} for {academic_year}. Please ensure they are enrolled in the Data Entry module.", 404
@@ -2234,7 +2240,8 @@ def api_get_scholastic_details(student_id):
 
 @app.route('/api/get-all-students', methods=['GET'])
 def api_get_all_students():
-    """Get all students for the current school, using enrollment data to determine correct form/class"""
+    """Get all students for the current school, using enrollment data to determine correct form/class.
+    Uses the currently selected term from school settings (same as Data Entry) as the single source of truth."""
     try:
         school_id = get_current_school_id()
         if not school_id:
@@ -2245,29 +2252,20 @@ def api_get_all_students():
         if not selected_academic_year:
             selected_academic_year = f'{2025}-{2026}'
         
-        # Use enrollment data (same as Data Entry) to determine correct form for each student
+        selected_term = settings.get('selected_term', 'Term 1')
+        
+        # Use enrollment data scoped to the currently selected term (same as Data Entry)
         all_students = []
         seen_ids = set()
         
         for form_level in [1, 2, 3, 4]:
-            for term in ['Term 1', 'Term 2', 'Term 3']:
-                enrolled = db.get_students_enrolled_in_term(form_level, term, selected_academic_year, school_id)
-                for s in enrolled:
-                    sid = s.get('student_id')
-                    if sid not in seen_ids:
-                        seen_ids.add(sid)
-                        # Override grade_level with the enrollment form_level (source of truth)
-                        s['grade_level'] = form_level
-                        all_students.append(s)
-        
-        # Fallback: also include students from get_students_by_grade 
-        # in case they haven't been enrolled in any term yet
-        for form_level in [1, 2, 3, 4]:
-            students = db.get_students_by_grade(form_level, school_id)
-            for s in students:
+            enrolled = db.get_students_enrolled_in_term(form_level, selected_term, selected_academic_year, school_id)
+            for s in enrolled:
                 sid = s.get('student_id')
                 if sid not in seen_ids:
                     seen_ids.add(sid)
+                    # Override grade_level with the enrollment form_level (source of truth)
+                    s['grade_level'] = form_level
                     all_students.append(s)
         
         return jsonify({
@@ -3128,7 +3126,8 @@ def print_scholastic_record(student_id):
 
 @app.route('/scholastic-record/bulk-print')
 def bulk_print_scholastic_records():
-    """Batch printable scholastic records for an entire class (Optimized)"""
+    """Batch printable scholastic records for an entire class (Optimized).
+    Uses enrollment data (same as Data Entry) to get the actual student list—no duplicates."""
     if not check_auth():
         return redirect(url_for('login'))
         
@@ -3137,16 +3136,28 @@ def bulk_print_scholastic_records():
         form_level = int(request.args.get('form_level', 1))
         academic_year = request.args.get('academic_year', '')
         
-        if not academic_year:
-            settings = db.get_school_settings(school_id)
-            academic_year = settings.get('current_academic_year', '2025-2026')
-            
-        students = db.get_students_by_grade(form_level, school_id)
-        if not students:
-            return render_template('error.html', error=f'No students found in Form {form_level}'), 404
-            
         settings = db.get_school_settings(school_id)
+        if not academic_year:
+            academic_year = settings.get('selected_academic_year', '2025-2026')
+        
         school_name = settings.get('school_name', '')
+        selected_term = settings.get('selected_term', 'Term 1')
+            
+        # Use enrollment-based student list (same source as Data Entry) to prevent duplicates
+        students = db.get_students_enrolled_in_term(form_level, selected_term, academic_year, school_id)
+        
+        # Deduplicate by student_id
+        seen_ids = set()
+        unique_students = []
+        for s in students:
+            sid = s.get('student_id')
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                unique_students.append(s)
+        students = unique_students
+        
+        if not students:
+            return render_template('error.html', error=f'No students found in Form {form_level} for {academic_year}. Please ensure they are enrolled in the Data Entry module.'), 404
         
         subjects = [
             'AGRICULTURE', 'BIBLE KNOWLEDGE', 'BIOLOGY', 'BUSINESS STUDIES', 'CHEMISTRY', 'CHICHEWA', 
