@@ -452,18 +452,33 @@ def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_y
                 sid_key_int, term, academic_year, form_level, school_id
             ))
         else:
-            mark_vals = []
-            for ent in smap_local.values():
-                if ent and ent.get('mark') is not None:
-                    try:
-                        mark_vals.append(int(ent['mark']))
-                    except (TypeError, ValueError):
-                        pass
-            if not mark_vals:
+            pairs = _marks_pairs(smap_local)
+            if not pairs:
                 summary = '—'
             else:
-                avg_m = sum(mark_vals) / len(mark_vals)
-                summary = str(db.calculate_grade(int(round(avg_m)), form_level, school_id))
+                english_mark = 0
+                for subj, m in pairs:
+                    if subj == 'English':
+                        english_mark = m
+                subjects_passed = sum(1 for _s, m in pairs if db.is_subject_passed(m, form_level))
+                english_passed = db.is_english_passed(english_mark, form_level)
+                status = db.determine_pass_fail_status(subjects_passed, english_passed)
+                if status == 'FAIL':
+                    summary = 'F'
+                else:
+                    passing_grades = [
+                        db.calculate_grade(m, form_level, school_id)
+                        for _s, m in pairs
+                        if db.is_subject_passed(m, form_level)
+                    ]
+                    grade_counts = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+                    for g in passing_grades:
+                        if g in grade_counts:
+                            grade_counts[g] += 1
+                    if any(grade_counts.values()):
+                        summary = max(grade_counts, key=grade_counts.get)
+                    else:
+                        summary = 'D'
         return cells, summary
 
     def _sort_tuple_grades_pdf(name_plain, sid_key_int, smap_local):
