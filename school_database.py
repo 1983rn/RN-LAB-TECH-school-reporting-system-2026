@@ -1211,7 +1211,28 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error retrieving all marks for form: {e}")
             return {}
-    
+
+    def get_all_marks_and_grades_for_form(self, form_level: int, term: str, academic_year: str, school_id: int) -> Dict[int, Dict[str, Dict]]:
+        """All students' marks and stored letter/numeric grades for a form/term/year (for class PDFs)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT student_id, subject, mark, grade FROM student_marks
+                    WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """, (form_level, term, academic_year, school_id))
+
+                out: Dict[int, Dict[str, Dict]] = {}
+                for row in cursor.fetchall():
+                    student_id, subject, mark, grade = row[0], row[1], row[2], row[3]
+                    if student_id not in out:
+                        out[student_id] = {}
+                    out[student_id][subject] = {'mark': mark, 'grade': grade}
+                return out
+        except Exception as e:
+            self.logger.error(f"Error retrieving marks+grades for form: {e}")
+            return {}
+
     def calculate_grade(self, mark: int, form_level: int, school_id: int = None) -> str:
         """Calculate grade based on mark, form level and school-specific grading rules.
         
@@ -1655,42 +1676,26 @@ class SchoolDatabase:
                         settings = {'school_name': s_name, 'school_id': school_id}
 
                 # Ensure critical fields are strings (not None)
-                    for field in ['school_name', 'school_address', 'school_phone', 'school_email', 
-                                 'selected_term', 'selected_academic_year', 'next_term_begins',
-                                 'boys_uniform', 'girls_uniform', 'boarding_fee',
-                                 'form_1_teacher_signature', 'form_2_teacher_signature',
-                                 'form_3_teacher_signature', 'form_4_teacher_signature',
-                                 'head_teacher_signature']:
-                        if settings.get(field) is None:
-                            settings[field] = ''
-                        
-                    # Parse grading rules from JSON
-                    try:
-                        settings['junior_grading_rules'] = json.loads(settings.get('junior_grading_rules') or 'null') or DEFAULT_JUNIOR_GRADING
-                    except Exception:
-                        settings['junior_grading_rules'] = DEFAULT_JUNIOR_GRADING
-                        
-                    try:
-                        settings['senior_grading_rules'] = json.loads(settings.get('senior_grading_rules') or 'null') or DEFAULT_SENIOR_GRADING
-                    except Exception:
-                        settings['senior_grading_rules'] = DEFAULT_SENIOR_GRADING
-                        
-                else:
-                    # If no settings exist for this school, return blank settings
-                    settings = {
-                        'school_name': '',
-                        'school_address': '',
-                        'school_phone': '',
-                        'school_email': '',
-                        'pta_fund': '',
-                        'sdf_fund': '',
-                        'boarding_fee': '',
-                        'next_term_begins': '',
-                        'boys_uniform': '',
-                        'girls_uniform': '',
-                        'selected_term': '',
-                        'selected_academic_year': ''
-                    }
+                for field in ['school_name', 'school_address', 'school_phone', 'school_email', 
+                             'selected_term', 'selected_academic_year', 'next_term_begins',
+                             'boys_uniform', 'girls_uniform', 'boarding_fee',
+                             'pta_fund', 'sdf_fund',
+                             'form_1_teacher_signature', 'form_2_teacher_signature',
+                             'form_3_teacher_signature', 'form_4_teacher_signature',
+                             'head_teacher_signature']:
+                    if settings.get(field) is None:
+                        settings[field] = ''
+                    
+                # Parse grading rules from JSON
+                try:
+                    settings['junior_grading_rules'] = json.loads(settings.get('junior_grading_rules') or 'null') or DEFAULT_JUNIOR_GRADING
+                except Exception:
+                    settings['junior_grading_rules'] = DEFAULT_JUNIOR_GRADING
+                    
+                try:
+                    settings['senior_grading_rules'] = json.loads(settings.get('senior_grading_rules') or 'null') or DEFAULT_SENIOR_GRADING
+                except Exception:
+                    settings['senior_grading_rules'] = DEFAULT_SENIOR_GRADING
                 
                 # Get academic periods (terms and years) - ONLY for this school_id
                 academic_periods = self.get_academic_periods(school_id)

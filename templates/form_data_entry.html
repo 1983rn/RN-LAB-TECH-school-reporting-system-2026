@@ -248,6 +248,14 @@
         <button class="btn btn-outline-malawi-green" id="printAllReportsBtn">
             <i class="fas fa-file-archive me-1"></i>Combined PDF (ZIP Archive)
         </button>
+        <button type="button" class="btn btn-outline-secondary" onclick="downloadClassScoresPdf('grades')"
+            title="Download a PDF of all learners with grades per subject for this class">
+            <i class="fas fa-file-pdf me-1 text-danger"></i>GRADES PDF download
+        </button>
+        <button type="button" class="btn btn-outline-secondary" onclick="downloadClassScoresPdf('marks')"
+            title="Download a PDF of all learners with raw marks per subject for this class">
+            <i class="fas fa-file-pdf me-1 text-danger"></i>MARKS PDF Download
+        </button>
     </div>
 </div>
 
@@ -1148,6 +1156,38 @@
             .catch(error => {
                 console.error('Error:', error);
                 showNotification('Error loading marks: ' + error.message, 'error');
+            });
+    }
+
+    function downloadClassScoresPdf(kind) {
+        const term = document.getElementById('termSelect').value;
+        const academicYear = document.getElementById('yearSelect').value;
+        const label = kind === 'grades' ? 'Grades' : 'Marks';
+        showNotification('Preparing ' + label + ' PDF…', 'info');
+        const url = `/api/export-form-class-${kind}-pdf?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`;
+        fetch(url)
+            .then(function (response) {
+                var ct = response.headers.get('Content-Type') || '';
+                if (response.ok && ct.indexOf('application/pdf') !== -1) {
+                    return response.blob();
+                }
+                return response.json().then(function (j) {
+                    return Promise.reject(new Error((j && j.message) || 'PDF export failed'));
+                });
+            })
+            .then(function (blob) {
+                var a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = URL.createObjectURL(blob);
+                a.download = ('Form_' + formLevel + '_Class_' + label + '_' + term + '_' + academicYear + '.pdf').replace(/\s+/g, '_');
+                document.body.appendChild(a);
+                a.click();
+                URL.revokeObjectURL(a.href);
+                a.remove();
+                showNotification(label + ' PDF downloaded', 'success');
+            })
+            .catch(function (err) {
+                showNotification(err.message || 'PDF export failed', 'error');
             });
     }
 

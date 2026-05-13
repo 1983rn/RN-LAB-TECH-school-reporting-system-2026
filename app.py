@@ -372,6 +372,275 @@ except Exception as e:
     # The server will not start if INIT_OK is False.
 
 
+def _data_entry_subjects_list(form_level: int, school_id: int):
+    """Subject columns aligned with the main Form Data Entry page (merged defaults + subject teachers)."""
+    default_subjects = [
+        'Agriculture', 'Bible Knowledge', 'Biology', 'Business Studies', 'Chemistry',
+        'Chichewa', 'Clothing & Textiles', 'Computer Studies', 'English', 'Geography',
+        'History', 'Life Skills/SOS', 'Mathematics', 'Physics', 'Technical Drawing', 'Home Economics',
+    ]
+    try:
+        teachers_map = db.get_subject_teachers(form_level=form_level, school_id=school_id)
+        merged_subjects = sorted(set(default_subjects) | set(teachers_map.keys()))
+    except Exception:
+        merged_subjects = sorted(default_subjects)
+    if form_level == 1:
+        return [s for s in merged_subjects if s != 'Accounting']
+    return merged_subjects
+
+
+def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_year: str, school_id: int, mode: str):
+    """
+    Build a class-wide PDF: mode 'marks' shows numeric marks per subject; 'grades' shows letter/numeric grades.
+    Uses the same enrolled student list as Data Entry. Returns (bytes|None, error_message|None).
+
+    GRADES PDF row order: Forms 3–4 by ascending aggregate points (best first); tie-break higher sum of marks;
+    learners with no marks entered appear last. Forms 1–2 match class rankings: PASS first (higher total marks,
+    then higher average), then FAIL (higher total marks first among failures).
+    Both PDFs include a final Remark column (PASS/FAIL) using the same pass rules as rankings; '—' when no marks.
+    GRADES PDF # column uses competition ranking: F3–4 ties share a position when aggregate points match; F1–2 ties
+    when PASS/FAIL group and total marks match (next rank skips by class size, e.g. two at 3 → next is 5).
+    """
+    from xml.sax.saxutils import escape
+    from reportlab.lib.pagesizes import A4, landscape  # type: ignore[import-not-found]
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer  # type: ignore[import-not-found]
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore[import-not-found]
+    from reportlab.lib import colors  # type: ignore[import-not-found]
+
+    students = db.get_students_enrolled_in_term(form_level, term, academic_year, school_id)
+    if not students:
+        return None, 'No students enrolled for this form, term, and academic year.'
+
+    subjects = _data_entry_subjects_list(form_level, school_id)
+    all_rows = db.get_all_marks_and_grades_for_form(form_level, term, academic_year, school_id)
+    settings = db.get_school_settings(school_id)
+    school_name = (settings.get('school_name') or 'School').strip()
+
+    def _marks_pairs(smap_local):
+        pairs = []
+        for subj, ent in smap_local.items():
+            if ent and ent.get('mark') is not None:
+                try:
+                    pairs.append((subj, int(ent['mark'])))
+                except (TypeError, ValueError):
+                    pass
+        return pairs
+
+    def _grade_cells_and_summary(sid_key_int, smap_local):
+        """Returns (list of subject grade cells, summary cell str)."""
+        cells = []
+        for sub in subjects:
+            entry = smap_local.get(sub)
+            if entry is None or entry.get('mark') is None:
+                cells.append('—')
+            else:
+                g = entry.get('grade')
+                if g is None or (isinstance(g, str) and not str(g).strip()):
+                    try:
+                        mk = int(entry['mark'])
+                    except (TypeError, ValueError):
+                        cells.append('—')
+                    else:
+                        g = db.calculate_grade(mk, form_level, school_id)
+                        cells.append(str(g))
+                else:
+                    cells.append(str(g))
+        if sid_key_int is None:
+            summary = '—'
+        elif form_level >= 3:
+            summary = str(db.calculate_aggregate_points_for_student(
+                sid_key_int, term, academic_year, form_level, school_id
+            ))
+        else:
+            mark_vals = []
+            for ent in smap_local.values():
+                if ent and ent.get('mark') is not None:
+                    try:
+                        mark_vals.append(int(ent['mark']))
+                    except (TypeError, ValueError):
+                        pass
+            if not mark_vals:
+                summary = '—'
+            else:
+                avg_m = sum(mark_vals) / len(mark_vals)
+                summary = str(db.calculate_grade(int(round(avg_m)), form_level, school_id))
+        return cells, summary
+
+    def _sort_tuple_grades_pdf(name_plain, sid_key_int, smap_local):
+        """Sort key for GRADES PDF row order (lower tuple sorts first in Python)."""
+        name_key = (name_plain or '').strip().lower()
+        pairs = _marks_pairs(smap_local)
+        has_marks = len(pairs) > 0
+        total_marks = sum(m for _s, m in pairs)
+        average = (sum(m for _s, m in pairs) / len(pairs)) if pairs else 0.0
+        if sid_key_int is None:
+            return (99, 0, 0, name_key)
+        if form_level >= 3:
+            ap = db.calculate_aggregate_points_for_student(
+                sid_key_int, term, academic_year, form_level, school_id
+            )
+            if not has_marks:
+                return (1, int(ap), 0, name_key)
+            return (0, int(ap), -int(total_marks), name_key)
+        english_mark = 0
+        for subj, m in pairs:
+            if subj == 'English':
+                english_mark = m
+        subjects_passed = sum(1 for _s, m in pairs if db.is_subject_passed(m, form_level))
+        english_passed = db.is_english_passed(english_mark, form_level)
+        status = db.determine_pass_fail_status(subjects_passed, english_passed)
+        is_fail = 1 if status == 'FAIL' else 0
+        return (is_fail, -float(total_marks), -float(average), name_key)
+
+    def _pass_fail_remark(sid_key_int, smap_local):
+        """PASS/FAIL from the same rules as class rankings; '—' if no learner id or no marks."""
+        if sid_key_int is None:
+            return '—'
+        pairs = _marks_pairs(smap_local)
+        if not pairs:
+            return '—'
+        english_mark = 0
+        for subj, m in pairs:
+            if subj == 'English':
+                english_mark = m
+        subjects_passed = sum(1 for _s, m in pairs if db.is_subject_passed(m, form_level))
+        english_passed = db.is_english_passed(english_mark, form_level)
+        return db.determine_pass_fail_status(subjects_passed, english_passed)
+
+    def _rank_display_tie_key(sid_key_int, smap_local):
+        """Key for tied # column: F3–4 = aggregate points only; F1–2 = (PASS/FAIL group, total marks)."""
+        if form_level >= 3:
+            if sid_key_int is None:
+                return -1  # unique sentinel; unlikely to collide with real aggregate
+            return int(db.calculate_aggregate_points_for_student(
+                sid_key_int, term, academic_year, form_level, school_id
+            ))
+        if sid_key_int is None:
+            return (9, -1)
+        pairs = _marks_pairs(smap_local)
+        if not pairs:
+            return (1, 0)
+        total = sum(m for _s, m in pairs)
+        english_mark = 0
+        for subj, m in pairs:
+            if subj == 'English':
+                english_mark = m
+        subjects_passed = sum(1 for _s, m in pairs if db.is_subject_passed(m, form_level))
+        english_passed = db.is_english_passed(english_mark, form_level)
+        status = db.determine_pass_fail_status(subjects_passed, english_passed)
+        is_fail = 1 if status == 'FAIL' else 0
+        return (is_fail, int(total))
+
+    header = ['#', 'Learner'] + subjects
+    if mode == 'grades':
+        header.append('Aggregate\nPoints' if form_level >= 3 else 'Average\nGrade')
+    header.append('Remark')
+    table_data = [header]
+
+    if mode == 'marks':
+        for idx, st in enumerate(students, start=1):
+            name = f"{st.get('first_name', '')} {st.get('last_name', '')}".strip()
+            sid = st.get('student_id')
+            try:
+                sid_key = int(sid) if sid is not None else None
+            except (TypeError, ValueError):
+                sid_key = None
+            smap = all_rows.get(sid_key, {}) if sid_key is not None else {}
+            row = [str(idx), name]
+            for sub in subjects:
+                entry = smap.get(sub)
+                if entry is not None and entry.get('mark') is not None:
+                    row.append(str(entry['mark']))
+                else:
+                    row.append('—')
+            row.append(_pass_fail_remark(sid_key, smap))
+            table_data.append(row)
+    else:
+        graded_rows = []
+        for st in students:
+            name = f"{st.get('first_name', '')} {st.get('last_name', '')}".strip()
+            sid = st.get('student_id')
+            try:
+                sid_key = int(sid) if sid is not None else None
+            except (TypeError, ValueError):
+                sid_key = None
+            smap = all_rows.get(sid_key, {}) if sid_key is not None else {}
+            cells, summary = _grade_cells_and_summary(sid_key, smap)
+            sk = _sort_tuple_grades_pdf(name, sid_key, smap)
+            remark = _pass_fail_remark(sid_key, smap)
+            graded_rows.append((sk, name, cells, summary, remark, sid_key, smap))
+        graded_rows.sort(key=lambda x: x[0])
+        tie_keys = [_rank_display_tie_key(r[5], r[6]) for r in graded_rows]
+        display_positions = []
+        for i in range(len(graded_rows)):
+            if i == 0:
+                display_positions.append(1)
+            elif tie_keys[i] == tie_keys[i - 1]:
+                display_positions.append(display_positions[-1])
+            else:
+                display_positions.append(i + 1)
+        for i, row in enumerate(graded_rows):
+            _sk, name, cells, summary, remark, _sid, _smap = row
+            pos = display_positions[i]
+            table_data.append([str(pos), name] + cells + [summary, remark])
+
+    page_w, _page_h = landscape(A4)
+    margin = 22
+    usable = page_w - 2 * margin
+    idx_w, name_w = 26, min(150, usable * 0.18)
+    n_sub = len(subjects)
+    summary_w = 72 if mode == 'grades' else 0
+    remark_w = 48
+    usable_subj = usable - idx_w - name_w - summary_w - remark_w
+    subj_w = usable_subj / n_sub if n_sub else usable_subj
+    col_widths = [idx_w, name_w] + [max(subj_w, 24)] * n_sub
+    if mode == 'grades':
+        col_widths.append(summary_w)
+    col_widths.append(remark_w)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=28,
+        bottomMargin=28,
+    )
+    styles = getSampleStyleSheet()
+    story = []
+    title_style = ParagraphStyle(
+        'Title', parent=styles['Heading1'], alignment=1, fontSize=12, spaceAfter=6, leading=14,
+    )
+    sub_style = ParagraphStyle(
+        'Sub', parent=styles['Normal'], alignment=1, fontSize=9, spaceAfter=10,
+    )
+    title_suffix = 'Subject grades (all learners)' if mode == 'grades' else 'Subject marks (all learners)'
+    story.append(Paragraph(escape(f"{school_name} — Form {form_level}"), title_style))
+    story.append(Paragraph(escape(f"{title_suffix} — {term} — {academic_year}"), sub_style))
+    story.append(Spacer(1, 4))
+
+    tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1f2e')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 5.5),
+        ('FONTSIZE', (0, 1), (-1, -1), 5.5),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('TOPPADDING', (0, 0), (-1, 0), 6),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+    ]))
+    story.append(tbl)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue(), None
+
+
 @app.route('/')
 def index():
     """Main dashboard with form selection"""
@@ -1162,6 +1431,62 @@ def api_load_all_marks():
             'success': False,
             'message': f'Error loading all marks: {str(e)}'
         })
+
+@app.route('/api/export-form-class-grades-pdf', methods=['GET'])
+def api_export_form_class_grades_pdf():
+    """PDF: all enrolled learners in the form with grade per subject (current term/year from query)."""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+
+        form_level = request.args.get('form_level', type=int)
+        term = (request.args.get('term') or '').strip()
+        academic_year = (request.args.get('academic_year') or '').strip()
+        if not form_level or form_level not in (1, 2, 3, 4) or not term or not academic_year:
+            return jsonify({'success': False, 'message': 'Missing or invalid form_level, term, or academic_year'}), 400
+
+        pdf_bytes, err = _build_form_class_marks_or_grades_pdf(form_level, term, academic_year, school_id, 'grades')
+        if err:
+            return jsonify({'success': False, 'message': err}), 404
+
+        fn = f"Form_{form_level}_GRADES_{term}_{academic_year}.pdf".replace(' ', '_').replace('/', '_')
+        resp = make_response(pdf_bytes)
+        resp.headers['Content-Type'] = 'application/pdf'
+        resp.headers['Content-Disposition'] = f'attachment; filename="{fn}"'
+        return resp
+    except Exception as e:
+        app.logger.error(f"export-form-class-grades-pdf: {e}")
+        return jsonify({'success': False, 'message': f'Error generating PDF: {str(e)}'}), 500
+
+
+@app.route('/api/export-form-class-marks-pdf', methods=['GET'])
+def api_export_form_class_marks_pdf():
+    """PDF: all enrolled learners in the form with raw mark per subject."""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+
+        form_level = request.args.get('form_level', type=int)
+        term = (request.args.get('term') or '').strip()
+        academic_year = (request.args.get('academic_year') or '').strip()
+        if not form_level or form_level not in (1, 2, 3, 4) or not term or not academic_year:
+            return jsonify({'success': False, 'message': 'Missing or invalid form_level, term, or academic_year'}), 400
+
+        pdf_bytes, err = _build_form_class_marks_or_grades_pdf(form_level, term, academic_year, school_id, 'marks')
+        if err:
+            return jsonify({'success': False, 'message': err}), 404
+
+        fn = f"Form_{form_level}_MARKS_{term}_{academic_year}.pdf".replace(' ', '_').replace('/', '_')
+        resp = make_response(pdf_bytes)
+        resp.headers['Content-Type'] = 'application/pdf'
+        resp.headers['Content-Disposition'] = f'attachment; filename="{fn}"'
+        return resp
+    except Exception as e:
+        app.logger.error(f"export-form-class-marks-pdf: {e}")
+        return jsonify({'success': False, 'message': f'Error generating PDF: {str(e)}'}), 500
+
 
 @app.route('/api/get-subject-teachers', methods=['GET'])
 def api_get_subject_teachers():
