@@ -211,19 +211,34 @@ function addKeyboardShortcuts() {
     });
 }
 
-// Auto-save functionality for settings
+// Auto-save draft values for settings (must be scoped per school — global keys leak across tenants)
+function settingsDraftStorageKey(schoolId, fieldId) {
+    return `settings_draft_${schoolId}_${fieldId}`;
+}
+
 function enableAutoSave() {
-    const settingsInputs = document.querySelectorAll('#settingsForm input');
-    
+    const form = document.getElementById('settingsForm');
+    if (!form) {
+        return;
+    }
+    const schoolId = form.dataset.schoolId;
+    if (!schoolId) {
+        return;
+    }
+
+    const settingsInputs = form.querySelectorAll('input, textarea, select');
+
     settingsInputs.forEach(input => {
+        if (!input.id) {
+            return;
+        }
+
         input.addEventListener('change', function() {
-            // Save to localStorage
-            localStorage.setItem(this.id, this.value);
+            localStorage.setItem(settingsDraftStorageKey(schoolId, this.id), this.value);
         });
-        
-        // Load from localStorage
-        const savedValue = localStorage.getItem(input.id);
-        if (savedValue) {
+
+        const savedValue = localStorage.getItem(settingsDraftStorageKey(schoolId, input.id));
+        if (savedValue !== null && savedValue !== '') {
             input.value = savedValue;
         }
     });
