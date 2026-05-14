@@ -72,11 +72,31 @@ async function makeApiRequest(url, data, method = 'POST') {
             body: JSON.stringify(data)
         });
         
+        const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+        const raw = await response.text();
+
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            if (ct.includes('application/json') && raw.trim()) {
+                try {
+                    const errJson = JSON.parse(raw);
+                    throw new Error(errJson.message || `HTTP error! status: ${response.status}`);
+                } catch (e) {
+                    if (e instanceof SyntaxError) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    throw e;
+                }
+            }
+            throw new Error(raw.trim() ? raw.trim().slice(0, 200) : `HTTP error! status: ${response.status}`);
         }
-        
-        return await response.json();
+
+        if (!raw.trim()) {
+            return null;
+        }
+        if (!ct.includes('application/json')) {
+            throw new Error('Server returned a non-JSON response');
+        }
+        return JSON.parse(raw);
     } catch (error) {
         console.error('API request failed:', error);
         throw error;
@@ -94,10 +114,22 @@ async function downloadFile(url, data, filename) {
         });
         
         if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.message || 'Download failed');
+            const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+            const raw = await response.text();
+            if (ct.includes('application/json') && raw.trim()) {
+                try {
+                    const errorData = JSON.parse(raw);
+                    throw new Error(errorData.message || 'Download failed');
+                } catch (e) {
+                    if (e instanceof SyntaxError) {
+                        throw new Error(`Download failed (${response.status})`);
+                    }
+                    throw e;
+                }
+            }
+            throw new Error(raw.trim() ? raw.trim().slice(0, 200) : `Download failed (${response.status})`);
         }
-        
+
         const blob = await response.blob();
         const downloadUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');

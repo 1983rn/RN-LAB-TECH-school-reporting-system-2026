@@ -629,6 +629,29 @@
     const formLevel = {{ form_level }};
     let students = [];
 
+    function readFetchError(response) {
+        const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+            return response.text().then(function (raw) {
+                if (!raw.trim()) {
+                    throw new Error('Request failed (' + response.status + ')');
+                }
+                try {
+                    const data = JSON.parse(raw);
+                    throw new Error(data.message || ('Request failed (' + response.status + ')'));
+                } catch (e) {
+                    if (e instanceof SyntaxError) {
+                        throw new Error('Request failed (' + response.status + ')');
+                    }
+                    throw e;
+                }
+            });
+        }
+        return response.text().then(function (t) {
+            throw new Error(t ? t.trim().slice(0, 200) : ('Request failed (' + response.status + ')'));
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         const printBtn = document.getElementById('printAllReportsBtn');
         if (printBtn) {
@@ -1167,13 +1190,10 @@
         const url = `/api/export-form-class-${kind}-pdf?form_level=${formLevel}&term=${encodeURIComponent(term)}&academic_year=${encodeURIComponent(academicYear)}`;
         fetch(url)
             .then(function (response) {
-                var ct = response.headers.get('Content-Type') || '';
-                if (response.ok && ct.indexOf('application/pdf') !== -1) {
-                    return response.blob();
+                if (!response.ok) {
+                    return readFetchError(response);
                 }
-                return response.json().then(function (j) {
-                    return Promise.reject(new Error((j && j.message) || 'PDF export failed'));
-                });
+                return response.blob();
             })
             .then(function (blob) {
                 var a = document.createElement('a');
@@ -1340,12 +1360,8 @@
             .then(response => {
                 if (response.ok) {
                     return response.blob();
-                } else {
-                    // Try to get error message from response
-                    return response.json().then(errorData => {
-                        throw new Error(errorData.message || 'Export failed');
-                    });
                 }
+                return readFetchError(response);
             })
             .then(blob => {
                 const url = window.URL.createObjectURL(blob);
@@ -1603,11 +1619,8 @@
             .then(response => {
                 if (response.ok) {
                     return response.blob();
-                } else {
-                    return response.json().then(data => {
-                        throw new Error(data.message || 'PDF export failed');
-                    });
                 }
+                return readFetchError(response);
             })
             .then(blob => {
                 // Create download link

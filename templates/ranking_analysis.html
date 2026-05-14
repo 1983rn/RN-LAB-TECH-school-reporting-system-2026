@@ -174,6 +174,30 @@ function _getSelectedValue(selectId, fallback) {
     return fallback;
 }
 
+/** Parse failed fetch without calling .json() on HTML/binary/empty bodies */
+function readFetchError(response) {
+    const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+        return response.text().then(function (raw) {
+            if (!raw.trim()) {
+                throw new Error('Request failed (' + response.status + ')');
+            }
+            try {
+                var data = JSON.parse(raw);
+                throw new Error(data.message || ('Request failed (' + response.status + ')'));
+            } catch (e) {
+                if (e instanceof SyntaxError) {
+                    throw new Error('Request failed (' + response.status + ')');
+                }
+                throw e;
+            }
+        });
+    }
+    return response.text().then(function (t) {
+        throw new Error(t ? t.trim().slice(0, 200) : ('Request failed (' + response.status + ')'));
+    });
+}
+
 function loadRankings() {
     const formLevel = document.getElementById('formLevel').value;
     const term = _getSelectedValue('termSelect', 'Term 1');
@@ -573,11 +597,8 @@ function exportRankings() {
         hideLoading();
         if (response.ok) {
             return response.blob();
-        } else {
-            return response.json().then(data => {
-                throw new Error(data.message);
-            });
         }
+        return readFetchError(response);
     })
     .then(blob => {
         const url = window.URL.createObjectURL(blob);
@@ -631,11 +652,8 @@ function downloadTopPerformersPDF(category, formLevel) {
         hideLoading();
         if (response.ok) {
             return response.blob();
-        } else {
-            return response.json().then(data => {
-                throw new Error(data.message || 'Failed to generate PDF');
-            });
         }
+        return readFetchError(response);
     })
     .then(blob => {
         const url = window.URL.createObjectURL(blob);
@@ -680,11 +698,8 @@ function downloadRankingsPDF(formLevel) {
         hideLoading();
         if (response.ok) {
             return response.blob();
-        } else {
-            return response.json().then(data => {
-                throw new Error(data.message || 'Failed to generate PDF');
-            });
         }
+        return readFetchError(response);
     })
     .then(blob => {
         const url = window.URL.createObjectURL(blob);

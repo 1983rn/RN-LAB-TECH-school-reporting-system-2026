@@ -403,6 +403,7 @@ def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_y
     """
     from xml.sax.saxutils import escape
     from reportlab.lib.pagesizes import A4, landscape  # type: ignore[import-not-found]
+    from reportlab.lib.enums import TA_CENTER  # type: ignore[import-not-found]
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer  # type: ignore[import-not-found]
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore[import-not-found]
     from reportlab.lib import colors  # type: ignore[import-not-found]
@@ -550,8 +551,8 @@ def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_y
     if mode == 'grades':
         header.append('Aggregate\nPoints' if form_level >= 3 else 'Average\nGrade')
     header.append('Remark')
-    table_data = [header]
 
+    table_data = []
     if mode == 'marks':
         for idx, st in enumerate(students, start=1):
             name = f"{st.get('first_name', '')} {st.get('last_name', '')}".strip()
@@ -600,18 +601,23 @@ def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_y
             table_data.append([str(pos), name] + cells + [summary, remark])
 
     page_w, _page_h = landscape(A4)
-    margin = 22
+    margin = 16
     usable = page_w - 2 * margin
-    idx_w, name_w = 26, min(150, usable * 0.18)
+    idx_w, name_w = 24, min(132, usable * 0.155)
     n_sub = len(subjects)
-    summary_w = 72 if mode == 'grades' else 0
-    remark_w = 48
+    summary_w = 64 if mode == 'grades' else 0
+    remark_w = 40
     usable_subj = usable - idx_w - name_w - summary_w - remark_w
     subj_w = usable_subj / n_sub if n_sub else usable_subj
-    col_widths = [idx_w, name_w] + [max(subj_w, 24)] * n_sub
+    min_subj_col = 20
+    col_widths = [idx_w, name_w] + [max(subj_w, min_subj_col)] * n_sub
     if mode == 'grades':
         col_widths.append(summary_w)
     col_widths.append(remark_w)
+    total_w = sum(col_widths)
+    if total_w > usable + 0.25:
+        scale = usable / total_w
+        col_widths = [w * scale for w in col_widths]
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -619,34 +625,50 @@ def _build_form_class_marks_or_grades_pdf(form_level: int, term: str, academic_y
         pagesize=landscape(A4),
         leftMargin=margin,
         rightMargin=margin,
-        topMargin=28,
-        bottomMargin=28,
+        topMargin=24,
+        bottomMargin=24,
     )
     styles = getSampleStyleSheet()
     story = []
     title_style = ParagraphStyle(
-        'Title', parent=styles['Heading1'], alignment=1, fontSize=12, spaceAfter=6, leading=14,
+        'Title', parent=styles['Heading1'], alignment=1, fontSize=13, spaceAfter=5, leading=16,
     )
     sub_style = ParagraphStyle(
-        'Sub', parent=styles['Normal'], alignment=1, fontSize=9, spaceAfter=10,
+        'Sub', parent=styles['Normal'], alignment=1, fontSize=10, spaceAfter=8,
     )
+    hdr_para_style = ParagraphStyle(
+        'ClassPdfHdr',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=6.5,
+        leading=7.5,
+        alignment=TA_CENTER,
+        textColor=colors.whitesmoke,
+    )
+    table_data.insert(
+        0,
+        [Paragraph(escape(str(h)).replace('\n', '<br/>'), hdr_para_style) for h in header],
+    )
+
     title_suffix = 'Subject grades (all learners)' if mode == 'grades' else 'Subject marks (all learners)'
     story.append(Paragraph(escape(f"{school_name} — Form {form_level}"), title_style))
     story.append(Paragraph(escape(f"{title_suffix} — {term} — {academic_year}"), sub_style))
     story.append(Spacer(1, 4))
 
+    body_font = 7
     tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
     tbl.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1f2e')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (1, 1), (1, -1), 'LEFT'),
         ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 5.5),
-        ('FONTSIZE', (0, 1), (-1, -1), 5.5),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-        ('TOPPADDING', (0, 0), (-1, 0), 6),
+        ('FONTSIZE', (0, 1), (-1, -1), body_font),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
         ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
     ]))
@@ -2748,6 +2770,45 @@ def api_update_school_settings():
             'success': False,
             'message': f'Error updating settings: {str(e)}'
         })
+
+@app.route('/api/export-rankings', methods=['POST'])
+def api_export_rankings():
+    """Export rankings table as Excel (.xlsx) for the Rankings Analysis page."""
+    try:
+        school_id = get_current_school_id()
+        if not school_id:
+            return jsonify({'success': False, 'message': 'School authentication required'}), 403
+
+        data = request.get_json(silent=True) or {}
+        form_level = int(data.get('form_level') or 0)
+        term = (data.get('term') or '').strip()
+        academic_year = (data.get('academic_year') or '').strip()
+        if form_level not in (1, 2, 3, 4) or not term or not academic_year:
+            return jsonify({'success': False, 'message': 'Missing or invalid form_level, term, or academic_year'}), 400
+
+        rankings_data = db.get_student_rankings(form_level, term, academic_year, school_id)
+        rankings = []
+        if isinstance(rankings_data, dict):
+            rankings = rankings_data.get('rankings') or []
+        if not rankings:
+            return jsonify({'success': False, 'message': 'No rankings data found'}), 404
+
+        df = pd.DataFrame(rankings)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Rankings')
+        output.seek(0)
+        fn = f"Form_{form_level}_Rankings_{term}_{academic_year.replace('-', '_')}.xlsx".replace(' ', '_').replace('/', '_')
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=fn,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        app.logger.error(f"export-rankings: {e}")
+        return jsonify({'success': False, 'message': f'Error exporting rankings: {str(e)}'}), 500
+
 
 @app.route('/api/export-rankings-pdf', methods=['POST'])
 def api_export_rankings_pdf():
