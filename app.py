@@ -3101,12 +3101,12 @@ def api_export_bulk_report_cards():
         # Get all students for this form who have marks in this period
         with db.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(db._adapt_query("""
                 SELECT DISTINCT s.student_id 
                 FROM students s
                 JOIN student_marks m ON s.student_id = m.student_id
                 WHERE s.grade_level = ? AND m.term = ? AND m.academic_year = ? AND s.school_id = ?
-            """, (form_level, term, academic_year, school_id))
+            """), (form_level, term, academic_year, school_id))
             student_ids = [row[0] for row in cursor.fetchall()]
         
         if not student_ids:

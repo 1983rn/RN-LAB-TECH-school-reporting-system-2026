@@ -857,7 +857,8 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             girls_uniform = settings.get('girls_uniform') or self.girls_uniform or ''
 
             form_level = student.get('grade_level', 1)
-            teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
+            if not batch_context:
+                teachers_map = self.db.get_subject_teachers(form_level=form_level, school_id=school_id)
             
             styles = getSampleStyleSheet()
             
@@ -922,16 +923,16 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             student_full_name = f"{student['first_name']} {student['last_name']}"
             
             # Priority: 1. Passed in overall_rankings (batch mode), 2. Database cache, 3. Calculate on fly
-            cached_result = self.db.get_precomputed_result(student_id, term, academic_year, school_id)
-            
             if overall_rankings and student_full_name in overall_rankings:
                 position_data = overall_rankings[student_full_name]
                 if total_students is not None and total_students != '--':
                     position_data['total_students'] = total_students
-            elif cached_result:
-                position_data = cached_result
             else:
-                position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
+                cached_result = self.db.get_precomputed_result(student_id, term, academic_year, school_id)
+                if cached_result:
+                    position_data = cached_result
+                else:
+                    position_data = self.db.get_student_position_and_points(student_id, term, academic_year, form_level, school_id)
             
             # Safety check: ensure total_students is never '--' or None if possible
             if not position_data.get('total_students') or position_data.get('total_students') == '--' or position_data.get('total_students') == 0:
@@ -940,20 +941,20 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                      with self.db.get_connection() as conn:
                          cursor = conn.cursor()
                          # According to authoritative rule: count students who actually have marks for this term/year/form (Data Entry)
-                         cursor.execute("""
+                         cursor.execute(self.db._adapt_query("""
                             SELECT COUNT(DISTINCT student_id) FROM student_marks 
                             WHERE term = ? AND academic_year = ? AND form_level = ? AND school_id = ?
-                         """, (term, academic_year, form_level, school_id))
+                         """), (term, academic_year, form_level, school_id))
                          count = cursor.fetchone()[0]
                          
                          if not count:
                              # Fallback to counting active students if no marks found yet
-                             cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')", (form_level, school_id))
+                             cursor.execute(self.db._adapt_query("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')"), (form_level, school_id))
                              count = cursor.fetchone()[0]
                              
                          if not count:
                              # Last resort: count any student in this grade for this school
-                             cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
+                             cursor.execute(self.db._adapt_query("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?"), (form_level, school_id))
                              count = cursor.fetchone()[0]
                              
                          position_data['total_students'] = count if count else '--'

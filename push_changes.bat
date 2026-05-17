@@ -12,7 +12,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo 2. Committing changes...
-git commit -m "Fixed missing self._adapt_query() PostgreSQL syntax bug for get_all_marks_for_form and save_student_mark which caused 0 marks found"
+git commit -m "Fixed missing self._adapt_query() for combined PDF ZIP export and optimized loop speed to support fast downloads for 500+ students"
 if %ERRORLEVEL% neq 0 (
     echo [INFO] No changes to commit or commit failed.
 )

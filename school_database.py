@@ -1836,28 +1836,28 @@ class SchoolDatabase:
 
                 # Get total learners enrolled in this class/form (Active students)
                 if school_id:
-                    cursor.execute("""
+                    cursor.execute(self._adapt_query("""
                         SELECT COUNT(*) FROM students 
                         WHERE grade_level = ? AND school_id = ? AND (status = 'Active' OR status IS NULL OR status = '')
-                    """, (form_level, school_id))
+                    """), (form_level, school_id))
                 else:
                     return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 total_class_size = cursor.fetchone()[0]
 
                 # If no active students found, fallback to total enrollment for this grade
                 if not total_class_size and school_id:
-                    cursor.execute("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?", (form_level, school_id))
+                    cursor.execute(self._adapt_query("SELECT COUNT(*) FROM students WHERE grade_level = ? AND school_id = ?"), (form_level, school_id))
                     total_class_size = cursor.fetchone()[0]
                 
                 # Get ALL students who have marks for this form, term, and academic year
                 if school_id:
-                    cursor.execute("""
+                    cursor.execute(self._adapt_query("""
                         SELECT DISTINCT s.student_id, s.first_name, s.last_name 
                         FROM students s
                         JOIN student_marks sm ON s.student_id = sm.student_id
                         WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
                         ORDER BY s.first_name, s.last_name
-                    """, (form_level, term, academic_year, school_id))
+                    """), (form_level, term, academic_year, school_id))
                 else:
                     return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
@@ -1866,16 +1866,16 @@ class SchoolDatabase:
                 
                 # Get summary stats for ALL students in one query
                 if school_id:
-                    cursor.execute(f"""
+                    cursor.execute(self._adapt_query(f"""
                         SELECT sm.student_id,
                                AVG(sm.mark) as average,
                                SUM(sm.mark) as total_marks,
                                COUNT(CASE WHEN sm.mark >= {pass_threshold} THEN 1 END) as subjects_passed,
                                COUNT(sm.mark) as total_subjects
                         FROM student_marks sm
-                        WHERE sm.form_level = %s AND sm.term = %s AND sm.academic_year = %s AND sm.school_id = %s
+                        WHERE sm.form_level = ? AND sm.term = ? AND sm.academic_year = ? AND sm.school_id = ?
                         GROUP BY sm.student_id
-                    """, (form_level, term, academic_year, school_id))
+                    """), (form_level, term, academic_year, school_id))
                 else:
                     return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
@@ -1884,10 +1884,10 @@ class SchoolDatabase:
                 # Pre-fetch ALL marks for the form to avoid queries in the loop
                 from collections import defaultdict
                 if school_id:
-                    cursor.execute("""
+                    cursor.execute(self._adapt_query("""
                         SELECT student_id, subject, mark FROM student_marks
-                        WHERE form_level = %s AND term = %s AND academic_year = %s AND school_id = %s
-                    """, (form_level, term, academic_year, school_id))
+                        WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
+                    """), (form_level, term, academic_year, school_id))
                 else:
                     return {'rankings': [], 'total_students': 0, 'students_with_marks': 0}
                 
