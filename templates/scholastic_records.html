@@ -251,6 +251,7 @@ function loadStudentsForForm(formLevel) {
                 option.setAttribute('data-form', formLevel);
                 option.setAttribute('data-fname', student.first_name);
                 option.setAttribute('data-lname', student.last_name);
+                option.setAttribute('data-sex', student.sex || '—');
                 select.appendChild(option);
             });
         } else {
@@ -278,9 +279,11 @@ function updateSummary() {
         const form = selectedOption.getAttribute('data-form');
         const fname = selectedOption.getAttribute('data-fname');
         const lname = selectedOption.getAttribute('data-lname');
+        const sex = selectedOption.getAttribute('data-sex') || '—';
         
         document.getElementById('studentSummary').innerHTML = `
             <p><strong>Name:</strong> ${fname} ${lname}</p>
+            <p><strong>Sex:</strong> ${sex}</p>
             <p><strong>Form Level:</strong> ${form}</p>
             <p class="text-muted">Ready to print scholastic record</p>
         `;

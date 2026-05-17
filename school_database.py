@@ -213,6 +213,7 @@ class SchoolDatabase:
                 student_number TEXT,
                 first_name TEXT NOT NULL,
                 last_name TEXT NOT NULL,
+                sex TEXT,
                 date_of_birth TEXT,
                 grade_level INTEGER NOT NULL,
                 email TEXT,
@@ -318,6 +319,12 @@ class SchoolDatabase:
             try:
                 cur.execute("ALTER TABLE school_fees ADD COLUMN IF NOT EXISTS school_id INTEGER UNIQUE REFERENCES schools(school_id) ON DELETE CASCADE")
                 cur.execute("ALTER TABLE school_fees ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+
+            # Migration: Ensure sex exists in students
+            try:
+                cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS sex TEXT")
             except Exception:
                 pass
 
@@ -616,15 +623,16 @@ class SchoolDatabase:
                 
                 insert_sql = """
                     INSERT INTO students (
-                        student_number, first_name, last_name, date_of_birth,
+                        student_number, first_name, last_name, sex, date_of_birth,
                         grade_level, email, phone, address, parent_guardian_name,
                         parent_guardian_phone, parent_guardian_email, school_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 cursor.execute(self._adapt_query(insert_sql), (
                     student_serial_number,
                     student_data.get('first_name'),
                     student_data.get('last_name'),
+                    student_data.get('sex'),
                     student_data.get('date_of_birth'),
                     student_data.get('grade_level') or student_data.get('form_level'),
                     student_data.get('email'),
@@ -745,20 +753,20 @@ class SchoolDatabase:
                             else:
                                 # Add as new student (maintain)
                                 cursor.execute("""
-                                    INSERT INTO students (first_name, last_name, grade_level, school_id, status)
-                                    VALUES (?, ?, ?, ?, 'Active')
+                                    INSERT INTO students (first_name, last_name, sex, grade_level, school_id, status)
+                                    VALUES (?, ?, ?, ?, ?, 'Active')
                                     RETURNING student_id
-                                """, (row_data['first_name'], row_data['last_name'], form_level, school_id))
+                                """, (row_data['first_name'], row_data['last_name'], row_data.get('sex'), form_level, school_id))
                                 
                                 student_id = cursor.fetchone()[0]
                                 success_count += 1
                         else:
                             # New student
                             cursor.execute("""
-                                INSERT INTO students (first_name, last_name, grade_level, school_id, status)
-                                VALUES (?, ?, ?, ?, 'Active')
-                                RETURNING student_id
-                            """, (row_data['first_name'], row_data['last_name'], form_level, school_id))
+                                    INSERT INTO students (first_name, last_name, sex, grade_level, school_id, status)
+                                    VALUES (?, ?, ?, ?, ?, 'Active')
+                                    RETURNING student_id
+                            """, (row_data['first_name'], row_data['last_name'], row_data.get('sex'), form_level, school_id))
                             
                             student_id = cursor.fetchone()[0]
                             success_count += 1
@@ -852,7 +860,7 @@ class SchoolDatabase:
                 update_values = []
                 
                 for field, value in update_data.items():
-                    if field in ['first_name', 'last_name', 'date_of_birth', 'email', 'phone', 'address', 
+                    if field in ['first_name', 'last_name', 'sex', 'date_of_birth', 'email', 'phone', 'address', 
                                'parent_guardian_name', 'parent_guardian_phone', 'parent_guardian_email']:
                         update_fields.append(f"{field} = ?")
                         update_values.append(value)
@@ -1073,7 +1081,7 @@ class SchoolDatabase:
                     cursor = conn.cursor()
                     
                     # Strict ownership check: Does this student belong to this school?
-                    cursor.execute("SELECT school_id FROM students WHERE student_id = ? AND school_id = ?", (student_id, school_id))
+                    cursor.execute(self._adapt_query("SELECT school_id FROM students WHERE student_id = ? AND school_id = ?"), (student_id, school_id))
                     if not cursor.fetchone():
                         self.logger.warning(f"Unauthorized mark save attempt: Student {student_id} does not belong to School {school_id}")
                         return False
@@ -1192,10 +1200,10 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     SELECT student_id, subject, mark FROM student_marks 
                     WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
-                """, (form_level, term, academic_year, school_id))
+                """), (form_level, term, academic_year, school_id))
                 
                 all_marks = {}
                 for row in cursor.fetchall():
@@ -1217,10 +1225,10 @@ class SchoolDatabase:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(self._adapt_query("""
                     SELECT student_id, subject, mark, grade FROM student_marks
                     WHERE form_level = ? AND term = ? AND academic_year = ? AND school_id = ?
-                """, (form_level, term, academic_year, school_id))
+                """), (form_level, term, academic_year, school_id))
 
                 out: Dict[int, Dict[str, Dict]] = {}
                 for row in cursor.fetchall():
@@ -2840,7 +2848,50 @@ class SchoolDatabase:
         except Exception as e:
             self.logger.error(f"Error deleting student marks: {e}")
             raise
+
+    def delete_student_subject_mark(self, student_id: int, subject: str, term: str, academic_year: str, school_id: int) -> bool:
+        """Delete a specific subject mark for a student - strictly isolated."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Strict ownership check: Does this student belong to this school?
+                cursor.execute(self._adapt_query("SELECT school_id FROM students WHERE student_id = ? AND school_id = ?"), (student_id, school_id))
+                if not cursor.fetchone():
+                    self.logger.warning(f"Unauthorized mark delete attempt: Student {student_id} does not belong to School {school_id}")
+                    return False
+
+                cursor.execute(self._adapt_query("""
+                    DELETE FROM student_marks 
+                    WHERE student_id = ? AND subject = ? AND term = ? AND academic_year = ? AND school_id = ?
+                """), (student_id, subject, term, academic_year, school_id))
+                
+                conn.commit()
+                self.logger.info(f"Deleted mark for student {student_id}, subject {subject} (School: {school_id})")
+                return True
+        except Exception as e:
+            self.logger.error(f"Error deleting student subject mark: {e}")
+            raise
     
+    def update_student_sex(self, student_id: int, sex: str, school_id: int) -> bool:
+        """Update a student's sex - strictly isolated."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._adapt_query("""
+                    UPDATE students 
+                    SET sex = ? 
+                    WHERE student_id = ? AND school_id = ?
+                """), (sex, student_id, school_id))
+                conn.commit()
+                if cursor.rowcount > 0:
+                    self.logger.info(f"Updated student {student_id} sex to {sex} (School: {school_id})")
+                    return True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error updating student sex: {e}")
+            raise
+            
     def delete_student(self, student_id: int, school_id: int):
         """Delete a student and their marks - strictly isolated."""
         try:
@@ -2861,19 +2912,26 @@ class SchoolDatabase:
             self.logger.error(f"Error deleting student: {e}")
             raise
     
-    def update_student_name(self, student_id: int, first_name: str, last_name: str, school_id: int):
-        """Update a student's name - strictly isolated."""
+    def update_student_name(self, student_id: int, first_name: str, last_name: str, school_id: int, sex: str = None):
+        """Update a student's name and sex - strictly isolated."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(self._adapt_query("""
-                    UPDATE students 
-                    SET first_name = ?, last_name = ? 
-                    WHERE student_id = ? AND school_id = ?
-                """), (first_name, last_name, student_id, school_id))
+                if sex is not None:
+                    cursor.execute(self._adapt_query("""
+                        UPDATE students 
+                        SET first_name = ?, last_name = ?, sex = ? 
+                        WHERE student_id = ? AND school_id = ?
+                    """), (first_name, last_name, sex, student_id, school_id))
+                else:
+                    cursor.execute(self._adapt_query("""
+                        UPDATE students 
+                        SET first_name = ?, last_name = ? 
+                        WHERE student_id = ? AND school_id = ?
+                    """), (first_name, last_name, student_id, school_id))
                 
                 if cursor.rowcount > 0:
-                    self.logger.info(f"Updated student {student_id} name to {first_name} {last_name}")
+                    self.logger.info(f"Updated student {student_id} name/sex to {first_name} {last_name} ({sex})")
                     return True
                 else:
                     self.logger.warning(f"No student found with ID {student_id} for name update")

@@ -256,6 +256,14 @@
             title="Download a PDF of all learners with raw marks per subject for this class">
             <i class="fas fa-file-pdf me-1 text-danger"></i>MARKS PDF Download
         </button>
+        <button type="button" class="btn btn-outline-success" onclick="downloadSummaryExcel()"
+            title="Download the full Excel report with the Summary sheet and Scholastic Records">
+            <i class="fas fa-file-excel me-1 text-success"></i>Summary Excel
+        </button>
+        <button type="button" class="btn btn-outline-danger" onclick="downloadScholasticPdf()"
+            title="Download a PDF of all scholastic records for this class">
+            <i class="fas fa-file-pdf me-1 text-danger"></i>Scholastic PDF
+        </button>
     </div>
 </div>
 
@@ -272,6 +280,9 @@
                 <th
                     style="width: 20%; font-size: 0.78rem; padding: 0.18rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">
                     Student Name</th>
+                <th
+                    style="width: 5%; font-size: 0.78rem; padding: 0.18rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">
+                    Sex</th>
                 {% for subject in subjects|sort %}
                 <th class="subject-column"
                     style="font-size: 0.68rem; padding: 0.12rem; position: sticky; top: 0; z-index: 51; background: #1a1f2e !important; border-top: none !important;">
@@ -287,7 +298,7 @@
         <tbody>
             {% if students %}
             {% for student in students %}
-            <tr data-student-id="{{ student.student_id }}"
+            <tr data-student-id="{{ student.student_id }}" data-student-sex="{{ student.sex or '' }}"
                 class="{% if loop.index0 % 2 == 0 %}table-light{% else %}table-white{% endif %}">
                 <td class="text-center" style="width: 50px;">
                     <div class="bg-malawi-green text-white rounded-circle d-flex align-items-center justify-content-center"
@@ -300,6 +311,15 @@
                         <strong class="text-malawi-black">{{ student.first_name }} {{ student.last_name }}</strong><br>
                         <small class="text-muted compact-id">ID: {{ student.student_id }}</small>
                     </div>
+                </td>
+                <td class="text-center" style="font-size: 0.78rem; padding: 0.18rem; vertical-align: middle; width: 80px;">
+                    <select class="form-select form-select-sm sex-select text-center fw-bold" 
+                            style="padding: 0.1rem 0.3rem; min-width: 60px;" 
+                            data-student-id="{{ student.student_id }}">
+                        <option value="" {% if not student.sex %}selected{% endif %}>—</option>
+                        <option value="M" {% if student.sex == 'M' %}selected{% endif %}>M</option>
+                        <option value="F" {% if student.sex == 'F' %}selected{% endif %}>F</option>
+                    </select>
                 </td>
                 {% for subject in subjects|sort %}
                 <td class="text-center subject-column">
@@ -331,7 +351,7 @@
             {% endfor %}
             {% else %}
             <tr>
-                <td colspan="{{ subjects|length + 2 }}" class="text-center py-5">
+                <td colspan="{{ subjects|length + 4 }}" class="text-center py-5">
                     <div class="text-muted">
                         <i class="fas fa-calendar-alt fa-3x mb-3 text-malawi-green"></i>
                         <h5 class="text-malawi-green">New Term/Academic Year - Student List Reset</h5>
@@ -379,7 +399,7 @@
         </tbody>
         <tfoot>
             <tr class="table-light">
-                <td colspan="{{ subjects|length + 2 }}" class="text-end">
+                <td colspan="{{ subjects|length + 4 }}" class="text-end">
                     <strong class="text-malawi-green">
                         <i class="fas fa-users me-1"></i>Total Learners Who Sat for Examinations: {{ students|length }}
                     </strong>
@@ -524,6 +544,16 @@
                             <input type="text" class="form-control" id="lastName" required>
                         </div>
                     </div>
+                    <div class="mb-3 mt-3">
+                        <label for="sex" class="form-label fw-bold text-malawi-green">
+                            <i class="fas fa-venus-mars me-1"></i>Sex
+                        </label>
+                        <select class="form-select" id="sex" required>
+                            <option value="" disabled selected>Select Sex...</option>
+                            <option value="M">Male (M)</option>
+                            <option value="F">Female (F)</option>
+                        </select>
+                    </div>
                 </form>
             </div>
             <div class="modal-footer">
@@ -562,6 +592,16 @@
                             </label>
                             <input type="text" class="form-control" id="editLastName" required>
                         </div>
+                    </div>
+                    <div class="mb-3 mt-3">
+                        <label for="editSex" class="form-label fw-bold text-malawi-green">
+                            <i class="fas fa-venus-mars me-1"></i>Sex
+                        </label>
+                        <select class="form-select" id="editSex" required>
+                            <option value="" disabled selected>Select Sex...</option>
+                            <option value="M">Male (M)</option>
+                            <option value="F">Female (F)</option>
+                        </select>
                     </div>
                 </form>
             </div>
@@ -742,10 +782,13 @@
         const formData = {
             first_name: document.getElementById('firstName').value,
             last_name: document.getElementById('lastName').value,
-            form_level: formLevel
+            sex: document.getElementById('sex').value,
+            form_level: formLevel,
+            term: document.getElementById('termSelect').value,
+            academic_year: document.getElementById('yearSelect').value
         };
 
-        if (!formData.first_name || !formData.last_name) {
+        if (!formData.first_name || !formData.last_name || !formData.sex) {
             alert('Please fill in all required fields');
             return;
         }
@@ -919,10 +962,11 @@
         const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
         if (!row) return;
 
-        // Get current student name
+        // Get current student name and sex
         const nameCell = row.querySelector('.student-name-column');
         const nameElement = nameCell.querySelector('strong');
         const currentName = nameElement.textContent;
+        const currentSex = (row.querySelector('.sex-select') ? row.querySelector('.sex-select').value : row.getAttribute('data-student-sex')) || '';
 
         // Create edit modal if it doesn't exist
         let editModal = document.getElementById('editStudentModal');
@@ -944,6 +988,14 @@
                                 <div class="mb-3">
                                     <label for="editLastName" class="form-label">Last Name</label>
                                     <input type="text" class="form-control" id="editLastName" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="editSex" class="form-label fw-bold text-malawi-green">Sex</label>
+                                    <select class="form-select" id="editSex" required>
+                                        <option value="">Select Sex...</option>
+                                        <option value="M">Male (M)</option>
+                                        <option value="F">Female (F)</option>
+                                    </select>
                                 </div>
                                 <input type="hidden" id="editStudentId">
                             </form>
@@ -968,6 +1020,7 @@
         // Populate form fields
         document.getElementById('editFirstName').value = firstName;
         document.getElementById('editLastName').value = lastName;
+        document.getElementById('editSex').value = currentSex;
         document.getElementById('editStudentId').value = studentId;
 
         // Show modal
@@ -979,9 +1032,10 @@
         const studentId = document.getElementById('editStudentId').value;
         const firstName = document.getElementById('editFirstName').value.trim();
         const lastName = document.getElementById('editLastName').value.trim();
+        const sex = document.getElementById('editSex').value;
 
-        if (!firstName || !lastName) {
-            showNotification('Both first name and last name are required', 'danger');
+        if (!firstName || !lastName || !sex) {
+            showNotification('First name, last name, and sex are required', 'danger');
             return;
         }
 
@@ -992,6 +1046,7 @@
                 student_id: studentId,
                 first_name: firstName,
                 last_name: lastName,
+                sex: sex,
                 form_level: formLevel
             })
         })
@@ -1003,6 +1058,17 @@
                     if (row) {
                         const nameElement = row.querySelector('.student-name-column strong');
                         nameElement.textContent = `${firstName} ${lastName}`;
+                        
+                        // Update data-student-sex attribute
+                        row.setAttribute('data-student-sex', sex);
+                        
+                        // Update Sex select dropdown
+                        if (row.cells && row.cells[2]) {
+                            const selectEl = row.cells[2].querySelector('.sex-select');
+                            if (selectEl) {
+                                selectEl.value = sex;
+                            }
+                        }
 
                         // Update button title attributes
                         const editBtn = row.querySelector('button[onclick*="editStudent"]');
@@ -1031,6 +1097,8 @@
             });
     }
 
+    const submitEditStudent = saveStudentName;
+
 
 
     function printReportCard(studentId, studentName) {
@@ -1053,6 +1121,7 @@
         input.classList.remove('border-danger', 'bg-danger-subtle', 'mark-unsaved');
         input.style.backgroundColor = '';
         input.style.borderColor = '';
+        input.defaultValue = input.value;
         input.dataset.saved = input.value;
     }
 
@@ -1080,33 +1149,54 @@
             row.querySelectorAll('.mark-input').forEach(input => {
                 const subject = input.getAttribute('data-subject');
                 const value = input.value.trim();
-                if (value === '') return;
-                const markValue = parseInt(value);
-                if (isNaN(markValue) || markValue < 0 || markValue > 100) {
-                    hasInvalidMarks = true;
-                    studentHasInvalidMarks = true;
-                    invalidMarkInfo.push({
-                        studentName: row.querySelector('.student-name-column strong').textContent,
-                        subject, mark: value
-                    });
-                    input.classList.add('border-danger', 'bg-danger-subtle');
-                    input.style.backgroundColor = '';
-                    input.style.borderColor = '';
-                } else {
-                    marks[subject] = markValue;
+                
+                if (value === '') {
+                    // Only send null (to delete) if the input previously had a loaded value
+                    if (input.defaultValue && input.defaultValue.trim() !== '') {
+                        marks[subject] = null;
+                    }
                     input.classList.remove('border-danger', 'bg-danger-subtle');
+                } else {
+                    const markValue = parseInt(value);
+                    if (isNaN(markValue) || markValue < 0 || markValue > 100) {
+                        hasInvalidMarks = true;
+                        studentHasInvalidMarks = true;
+                        invalidMarkInfo.push({
+                            studentName: row.querySelector('.student-name-column strong').textContent,
+                            subject, mark: value
+                        });
+                        input.classList.add('border-danger', 'bg-danger-subtle');
+                        input.style.backgroundColor = '';
+                        input.style.borderColor = '';
+                    } else {
+                        marks[subject] = markValue;
+                        input.classList.remove('border-danger', 'bg-danger-subtle');
+                    }
                 }
             });
 
-            if (Object.keys(marks).length > 0 && !studentHasInvalidMarks) {
+            const sexSelect = row.querySelector('.sex-select');
+            const sexValue = sexSelect ? sexSelect.value : '';
+            const initialSex = row.getAttribute('data-student-sex') || '';
+            const sexChanged = sexValue !== initialSex;
+
+            if ((Object.keys(marks).length > 0 || sexChanged) && !studentHasInvalidMarks) {
                 const p = fetch('/api/save-student-marks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ student_id: studentId, marks, term, academic_year: academicYear, form_level: formLevel })
+                    body: JSON.stringify({ 
+                        student_id: studentId, 
+                        marks, 
+                        sex: sexValue, 
+                        term, 
+                        academic_year: academicYear, 
+                        form_level: formLevel 
+                    })
                 })
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
+                            row.setAttribute('data-student-sex', sexValue);
                             // Clear all special styling — inputs are plain and editable
                             row.querySelectorAll('.mark-input').forEach(inp => markInputSaved(inp));
                             return { success: true };
@@ -1164,6 +1254,7 @@
                                 const input = row.querySelector(`input[data-subject="${subject}"]`);
                                 if (input) {
                                     input.value = mark;
+                                    input.defaultValue = String(mark);
                                     markInputSaved(input);
                                 }
                             });
@@ -1209,6 +1300,20 @@
             .catch(function (err) {
                 showNotification(err.message || 'PDF export failed', 'error');
             });
+    }
+
+    function downloadSummaryExcel() {
+        const academicYear = document.getElementById('yearSelect').value;
+        showNotification('Preparing Summary Excel…', 'info');
+        const url = `/api/export-bulk-scholastic-excel?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`;
+        window.location.href = url;
+    }
+
+    function downloadScholasticPdf() {
+        const academicYear = document.getElementById('yearSelect').value;
+        showNotification('Preparing Scholastic PDF…', 'info');
+        const url = `/scholastic-record/bulk-print?form_level=${formLevel}&academic_year=${encodeURIComponent(academicYear)}`;
+        window.open(url, '_blank');
     }
 
     // Mark input change tracking

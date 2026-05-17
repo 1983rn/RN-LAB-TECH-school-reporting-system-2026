@@ -289,11 +289,17 @@
                         <span class="field-value">{{ student.last_name|upper }}</span>
                     </span>
                 </div>
-                <div class="field-row" style="justify-content: space-between;">
-                    <div style="display: flex; flex-grow: 1;">
+                <div class="field-row" style="display: flex; justify-content: space-between; align-items: flex-end;">
+                    <div style="display: flex; flex-grow: 1; align-items: flex-end; margin-right: 15px;">
                         <span class="field-label">2. FIRST NAMES</span>
-                        <span class="field-line">
+                        <span class="field-line" style="flex-grow: 1;">
                             <span class="field-value">{{ student.first_name|upper }}</span>
+                        </span>
+                    </div>
+                    <div style="display: flex; width: 100px; align-items: flex-end; flex-shrink: 0;">
+                        <span class="field-label" style="margin-right: 5px;">SEX</span>
+                        <span class="field-line" style="flex-grow: 1; text-align: center;">
+                            <span class="field-value" style="font-weight: bold; width: 100%; display: inline-block;">{{ student.sex|upper if student.sex else '—' }}</span>
                         </span>
                     </div>
                 </div>

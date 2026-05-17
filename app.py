@@ -1144,6 +1144,7 @@ def api_update_student_name():
         student_id = data.get('student_id')
         first_name = data.get('first_name', '').strip()
         last_name = data.get('last_name', '').strip()
+        sex = data.get('sex', '').strip()
         form_level = data.get('form_level')
         
         if not student_id or not first_name or not last_name:
@@ -1159,8 +1160,8 @@ def api_update_student_name():
         if not student or student.get('school_id') != school_id:
             return jsonify({'success': False, 'message': 'Student not found'}), 404
         
-        # Update student name
-        success = db.update_student_name(student_id, first_name, last_name, school_id)
+        # Update student name and sex
+        success = db.update_student_name(student_id, first_name, last_name, school_id, sex=sex)
         
         if success:
             # Log the activity if multi-user
@@ -1169,16 +1170,16 @@ def api_update_student_name():
                 if user_id:
                     user_manager.log_user_activity(
                         user_id, 'edit_student', form_level,
-                        details=f"Updated student name from {student['first_name']} {student['last_name']} to {first_name} {last_name} (ID: {student_id})",
+                        details=f"Updated student name/sex from {student['first_name']} {student['last_name']} ({student.get('sex')}) to {first_name} {last_name} ({sex}) (ID: {student_id})",
                         school_id=school_id
                     )
             
             return jsonify({
                 'success': True, 
-                'message': f'Student name updated to {first_name} {last_name}'
+                'message': f'Student name/sex updated successfully'
             })
         else:
-            return jsonify({'success': False, 'message': 'Failed to update student name'}), 500
+            return jsonify({'success': False, 'message': 'Failed to update student name/sex'}), 500
         
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error updating student name: {str(e)}'}), 500
@@ -1353,13 +1354,17 @@ def api_save_student_marks():
         term = data['term']
         academic_year = data['academic_year']
         marks = data['marks']  # Dictionary of subject: mark
+        sex = data.get('sex')
         
+        if sex is not None:
+            db.update_student_sex(student_id, sex.strip(), school_id)
+            
         app.logger.info(f"DEBUG: Saving marks for student {student_id} (School: {school_id})")
         app.logger.info(f"DEBUG: Marks data to save: {marks}")
         
         # Save marks to database with school_id
         for subject, mark in marks.items():
-            if mark is not None and str(mark).strip():
+            if mark is not None and str(mark).strip() != '':
                 mark_value = int(str(mark).strip())
                 
                 # Fetch old mark for logging
@@ -1369,6 +1374,8 @@ def api_save_student_marks():
                 
                 db.save_student_mark(student_id, subject, mark_value, term, academic_year, form_level, school_id)
                 app.logger.info(f"DEBUG: After Update: new_mark for {subject} = {mark_value}")
+            else:
+                db.delete_student_subject_mark(student_id, subject, term, academic_year, school_id)
         
         app.logger.info(f"Marks updated successfully for student: {student_id}")
         
@@ -2111,7 +2118,8 @@ def api_update_student():
         
         update_data = {
             'first_name': data.get('first_name'),
-            'last_name': data.get('last_name')
+            'last_name': data.get('last_name'),
+            'sex': data.get('sex')
         }
         
         school_id = get_current_school_id()
@@ -2147,6 +2155,7 @@ def api_add_student():
         student_data = {
             'first_name': data['first_name'],
             'last_name': data['last_name'],
+            'sex': data.get('sex'),
             'grade_level': data['form_level']
         }
         
@@ -2248,6 +2257,14 @@ def api_upload_students_excel():
                         subject_columns[subject] = col
                         break
             
+            # Find sex/gender column if exists
+            sex_col = None
+            for col in df.columns:
+                col_normalized = str(col).lower().replace(' ', '').replace('_', '')
+                if col_normalized in ['sex', 'gender']:
+                    sex_col = col
+                    break
+            
             # Check duplicates only within the selected period and form.
             # Data Entry is term-scoped, so duplicate checks must be too.
             existing_students = db.get_students_enrolled_in_term(form_level, term, academic_year, school_id)
@@ -2290,6 +2307,17 @@ def api_upload_students_excel():
                 if is_duplicate:
                     duplicates_found.append(f"{first_name_raw} {last_name_raw}")
                 
+                # Capture sex
+                sex_val = ''
+                if sex_col:
+                    raw_sex = str(row.get(sex_col, '')).strip().upper()
+                    if raw_sex in ['M', 'MALE']:
+                        sex_val = 'M'
+                    elif raw_sex in ['F', 'FEMALE']:
+                        sex_val = 'F'
+                    elif raw_sex:
+                        sex_val = raw_sex[0] if len(raw_sex) > 0 else ''
+                
                 # Capture marks for this row
                 row_marks = {}
                 for subject, col_name in subject_columns.items():
@@ -2305,6 +2333,7 @@ def api_upload_students_excel():
                 rows_to_process.append({
                     'first_name': first_name_raw,
                     'last_name': last_name_raw,
+                    'sex': sex_val,
                     'is_duplicate': is_duplicate,
                     'existing_student_id': existing_student_id,
                     'marks': row_marks
@@ -2546,22 +2575,175 @@ def api_export_bulk_scholastic_excel():
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Scholastic Records')
-            
             workbook = writer.book
-            worksheet = writer.sheets['Scholastic Records']
             
-            # Header Formatting
-            header_format = workbook.add_format({
-                'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#D7E4BC', 'border': 1, 'font_size': 10
+            # --- SUMMARY SHEET GENERATION ---
+            summary_worksheet = workbook.add_worksheet('Summary')
+            
+            # Configure Page print setup for A4, Portrait
+            summary_worksheet.set_paper(9) # 9 is A4
+            summary_worksheet.set_portrait()
+            summary_worksheet.set_margins(left=0.5, right=0.5, top=0.5, bottom=0.5)
+            summary_worksheet.fit_to_pages(1, 0)
+            
+            # Formats
+            title_format = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 14, 'font_name': 'Arial'
+            })
+            metric_label_format = workbook.add_format({
+                'bold': True, 'align': 'left', 'valign': 'vcenter', 'font_size': 10, 'font_name': 'Arial'
+            })
+            metric_value_format = workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'font_size': 10, 'font_name': 'Arial', 'border': 1
+            })
+            table_header_format = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 10, 'font_name': 'Arial',
+                'fg_color': '#D9D9D9', 'border': 1
+            })
+            subject_format = workbook.add_format({
+                'align': 'left', 'valign': 'vcenter', 'font_size': 10, 'font_name': 'Arial', 'border': 1
+            })
+            count_format = workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'font_size': 10, 'font_name': 'Arial', 'border': 1
             })
             
-            for col_num, value in enumerate(df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-                worksheet.set_column(col_num, col_num, 12)
+            # Define Summary Subjects
+            summary_subjects = [
+                ('Agriculture', ['AGRICULTURE']),
+                ('Bible Knowledge', ['BIBLE KNOWLEDGE']),
+                ('Biology', ['BIOLOGY']),
+                ('Business Studies', ['BUSINESS STUDIES']),
+                ('Chemistry', ['CHEMISTRY']),
+                ('Chichewa', ['CHICHEWA']),
+                ('Clothing & Textiles', ['CLOTHING & TEXTILES']),
+                ('Computer Studies', ['COMPUTER STUDIES']),
+                ('English', ['ENGLISH']),
+                ('Geography', ['GEOGRAPHY']),
+                ('History', ['HISTORY']),
+                ('Home Economics', ['HOME ECONOMICS']),
+                ('Life Skills/SOS', ['LIFE SKILLS', 'SOCIAL STUDIES']),
+                ('Mathematics', ['MATHEMATICS']),
+                ('Physics', ['PHYSICS']),
+                ('Technical Drawing', ['TECHNICAL DRAWING'])
+            ]
+            
+            # Calculate Summary Metrics
+            boys_sat = 0
+            boys_passed = 0
+            boys_failed = 0
+            girls_sat = 0
+            girls_passed = 0
+            girls_failed = 0
+            
+            grades_list = ['A', 'B', 'C', 'D', 'F'] if form_level <= 2 else ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+            grade_distribution = {subj[0]: {g: 0 for g in grades_list} for subj in summary_subjects}
+            
+            for student in students:
+                sid = student['student_id']
+                sex = str(student.get('sex') or '').strip().upper()
+                is_boy = sex.startswith('M')
+                is_girl = sex.startswith('F')
+                
+                # Fetch current marks for the selected term and academic year
+                current_marks = {}
+                for db_subj in subjects_list:
+                    mark_val = marks_lookup.get(sid, {}).get(academic_year, {}).get(form_level, {}).get(db_subj, {}).get(selected_term)
+                    if mark_val is not None and mark_val != '':
+                        current_marks[db_subj] = int(mark_val)
+                
+                if not current_marks:
+                    continue
+                
+                # Increment Sat counts
+                if is_girl:
+                    girls_sat += 1
+                else:
+                    boys_sat += 1  # Default to boy if unspecified
+                    is_boy = True
+                    
+                # Calculate overall pass/fail status
+                pass_mark = 40 if form_level >= 3 else 50
+                passed_subjects = sum(1 for m in current_marks.values() if m >= pass_mark)
+                english_mark = current_marks.get('ENGLISH', 0)
+                overall_status = 'PASS' if passed_subjects >= 6 and english_mark >= pass_mark else 'FAIL'
+                
+                if overall_status == 'PASS':
+                    if is_boy:
+                        boys_passed += 1
+                    else:
+                        girls_passed += 1
+                else:
+                    if is_boy:
+                        boys_failed += 1
+                    else:
+                        girls_failed += 1
+                
+                # Calculate subject grade distributions
+                for sum_name, db_names in summary_subjects:
+                    max_mark = None
+                    for db_name in db_names:
+                        m = current_marks.get(db_name)
+                        if m is not None:
+                            if max_mark is None or m > max_mark:
+                                max_mark = m
+                    
+                    if max_mark is not None:
+                        g = db.calculate_grade(max_mark, form_level, school_id)
+                        if g in grade_distribution[sum_name]:
+                            grade_distribution[sum_name][g] += 1
+            
+            # Setup columns widths on summary sheet
+            summary_worksheet.set_column('A:A', 24)
+            summary_worksheet.set_column('B:K', 11)
+            
+            # Write Name of School
+            school_name_display = settings.get('school_name') or 'SCHOOL NAME'
+            summary_worksheet.merge_range('A1:F1', school_name_display.upper(), title_format)
+            
+            # Write biographical / summary metrics block
+            summary_worksheet.write(1, 0, 'Total Enrolment', metric_label_format)
+            summary_worksheet.write(1, 1, boys_sat + girls_sat, metric_value_format)
+            
+            summary_worksheet.write(1, 3, 'Boys Sat', metric_label_format)
+            summary_worksheet.write(1, 4, boys_sat, metric_value_format)
+            summary_worksheet.write(1, 5, 'Boys Passed', metric_label_format)
+            summary_worksheet.write(1, 6, boys_passed, metric_value_format)
+            summary_worksheet.write(1, 7, 'Boys Failed', metric_label_format)
+            summary_worksheet.write(1, 8, boys_failed, metric_value_format)
+            
+            summary_worksheet.write(2, 3, 'Girls Sat', metric_label_format)
+            summary_worksheet.write(2, 4, girls_sat, metric_value_format)
+            summary_worksheet.write(2, 5, 'Girls Passed', metric_label_format)
+            summary_worksheet.write(2, 6, girls_passed, metric_value_format)
+            summary_worksheet.write(2, 7, 'Girls Failed', metric_label_format)
+            summary_worksheet.write(2, 8, girls_failed, metric_value_format)
+            
+            summary_worksheet.write(3, 5, 'Total Passed', metric_label_format)
+            summary_worksheet.write(3, 6, boys_passed + girls_passed, metric_value_format)
+            summary_worksheet.write(3, 7, 'Total Failed', metric_label_format)
+            summary_worksheet.write(3, 8, boys_failed + girls_failed, metric_value_format)
+            
+            summary_worksheet.write(4, 0, 'Overall pass Rate', metric_label_format)
+            total_sat = boys_sat + girls_sat
+            pass_rate = (boys_passed + girls_passed) / total_sat * 100 if total_sat > 0 else 0
+            summary_worksheet.write(4, 1, f"{pass_rate:.1f}%", metric_value_format)
+            
+            # Write grade summary table
+            summary_worksheet.write(6, 0, 'SUBJECT', table_header_format)
+            for idx, g in enumerate(grades_list):
+                summary_worksheet.write(6, idx + 1, g, table_header_format)
+                
+            current_row = 7
+            for sum_name, _ in summary_subjects:
+                summary_worksheet.write(current_row, 0, sum_name, subject_format)
+                for idx, g in enumerate(grades_list):
+                    val = grade_distribution[sum_name].get(g, 0)
+                    write_val = val if val > 0 else '' # Leave blank if count is 0
+                    summary_worksheet.write(current_row, idx + 1, write_val, count_format)
+                current_row += 1
                 
         output.seek(0)
-        filename = f"Scholastic_Records_Form_{form_level}_{academic_year}.xlsx"
+        filename = f"Form_{form_level}_Summary_{academic_year}.xlsx"
         return send_file(output, as_attachment=True, download_name=filename, 
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                          

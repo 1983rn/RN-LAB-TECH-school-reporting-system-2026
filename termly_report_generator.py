@@ -445,6 +445,7 @@ For High Performing Students:
 
 Serial No:        {student.get('student_number', 'N/A')}
 Student Name:     {student['first_name']} {student['last_name']}
+Sex:              {student.get('sex', '—') or '—'}
 Term:             {term.replace('Term', '').strip()}
 Form:             {form_level}
 Year:             {academic_year}
@@ -597,6 +598,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             student_data = [
                 ['Serial No:', student_info['student_number']],
                 ['Student Name:', f"{student_info['first_name']} {student_info['last_name']}"],
+                ['Sex:', student_info.get('sex', '—') or '—'],
                 ['Term:', term],
                 ['Form:', str(student_info['grade_level'])],
                 ['Year:', academic_year]
@@ -1004,6 +1006,7 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
             student_data = [
                 ['Serial No:', serial_no, '', ''],
                 ['Student Name:', f"{student['first_name']} {student['last_name']}", '', ''],
+                ['Sex:', student.get('sex', '—') or '—', '', ''],
                 ['Term:', term.replace('Term', '').strip(), '', ''],
                 ['Form:', str(form_level), '', ''],
                 ['Year:', academic_year, '', ''],
@@ -1022,8 +1025,8 @@ UNIFORM - BOYS: {settings.get('boys_uniform') or ''}
                 ('BOTTOMPADDING', (0,0), (-1,-1), 1),
             ]
             
-            # Span the first 6 rows across columns 1-3
-            for i in range(6):
+            # Span the first 7 rows across columns 1-3
+            for i in range(7):
                 table_style.append(('SPAN', (1, i), (3, i)))
             
             student_table.setStyle(TableStyle(table_style))
